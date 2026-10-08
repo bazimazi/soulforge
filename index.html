@@ -1,32 +1,24 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>SOULFORGE: Endless Night</title>
-  <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-  <canvas id="game"></canvas>
-  <div id="hud" class="hidden"></div>
-  <div id="notices"></div>
-  <div id="screens"></div>
-  <div id="modal" class="hidden"></div>
-  <div id="fps" class="hidden"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>SOULFORGE: Endless Night</title>
+    <meta name="description" content="A survivors-like with deep meta progression. Survive the endless night." />
+    <meta name="theme-color" content="#0b0910" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  </head>
+  <body>
+    <canvas id="game" aria-label="Game view"></canvas>
+    <div id="hud" class="hidden"></div>
+    <div id="notices"></div>
+    <div id="screens"></div>
+    <div id="modal" class="hidden"></div>
+    <div id="fps" class="hidden"></div>
 
-  <script src="js/util.js"></script>
-  <script src="js/audio.js"></script>
-  <script src="js/sprites.js"></script>
-  <script src="js/data/passives.js"></script>
-  <script src="js/data/weapons.js"></script>
-  <script src="js/data/characters.js"></script>
-  <script src="js/data/enemies.js"></script>
-  <script src="js/data/forge.js"></script>
-  <script src="js/data/codex.js"></script>
-  <script src="js/save.js"></script>
-  <script src="js/game.js"></script>
-  <script src="js/render.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/main.js"></script>
-</body>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>

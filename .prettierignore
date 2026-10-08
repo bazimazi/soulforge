@@ -1,0 +1,15 @@
+dist
+dev-dist
+coverage
+playwright-report
+test-results
+package-lock.json
+public
+# Gameplay content, simulation body, UI templates and procedural art are intentionally dense
+# (one behaviour per line, mirrored across 12 characters / 30 weapons); they're formatted by hand.
+src/data
+src/game/game.ts
+src/meta/save.ts
+src/ui/ui.ts
+src/render/sprites.ts
+src/audio/audio.ts
