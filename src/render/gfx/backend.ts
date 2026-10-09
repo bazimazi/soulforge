@@ -34,7 +34,20 @@ export interface ImageOpts {
   tintA?: number;
   /** 0..1 — blend the sprite towards a white silhouette (hit flash). */
   flash?: number;
+  /**
+   * 0..1 — burn the sprite away through animated noise (deaths). At 1 nothing is left. The dissolving
+   * edge glows in `edge` (default white); WebGL2 only, Canvas2D fades the sprite instead.
+   */
+  dissolve?: number;
+  edge?: string;
+  /** Per-sprite noise seed for `dissolve`, so neighbouring corpses don't burn identically. */
+  seed?: number;
+  /** Horizontal shear about the pivot: x += y · skew (cast shadows lying on the ground). */
+  skew?: number;
 }
+
+/** Most shockwaves the post pass distorts at once. */
+export const MAX_WAVES = 8;
 
 export interface RenderStats {
   drawCalls: number;
@@ -65,6 +78,20 @@ export interface PostFX {
   grain: number;
   /** Seconds, for animated grain. */
   time: number;
+  /**
+   * Split toning: shadows pushed towards `shadows`, highlights towards `highlights` (CSS colours), each by
+   * its amount 0..1 (stage mood). 0 = off.
+   */
+  shadows: string;
+  shadowsA: number;
+  highlights: string;
+  highlightsA: number;
+  /**
+   * Screen-space refraction rings (explosions, boss slams): `waves[i*4..]` = centre x, y and radius in
+   * device pixels, strength in device pixels of displacement; `waveCount` entries are live (≤ MAX_WAVES).
+   */
+  waves: Float32Array;
+  waveCount: number;
 }
 
 export interface Backend {
@@ -91,8 +118,10 @@ export interface Backend {
   glow(x: number, y: number, r: number, color: string, alpha: number): void;
   /** Same as glow, with a numeric 0..255 colour (particle hot path). */
   glowRGB(x: number, y: number, r: number, cr: number, cg: number, cb: number, alpha: number): void;
-  /** Solid square of side `size` (particle debris). */
-  squareRGB(x: number, y: number, size: number, cr: number, cg: number, cb: number, alpha: number): void;
+  /** Solid square of side `size` (particle debris), optionally rotated. */
+  squareRGB(x: number, y: number, size: number, cr: number, cg: number, cb: number, alpha: number, rot?: number): void;
+  /** Soft-edged streak with a numeric 0..255 colour: transparent at the tail (x1, y1), `alpha` at the head (particle hot path). */
+  lineRGB(x1: number, y1: number, x2: number, y2: number, width: number, cr: number, cg: number, cb: number, alpha: number): void;
   circle(x: number, y: number, r: number, color: string, alpha: number): void;
   ellipse(x: number, y: number, rx: number, ry: number, rot: number, color: string, alpha: number): void;
   /**
@@ -126,11 +155,14 @@ export interface Backend {
   pattern(tile: HTMLCanvasElement, x0: number, y0: number, x1: number, y1: number): void;
 
   /**
-   * Light map: an `ambient` darkness layer at `scale` resolution in which lights punch holes.
-   * Between begin/end only `light()` may be called; `endLights` composites it over the scene.
+   * Light map at `scale` resolution. `ambient` is the stage darkness as a CSS colour whose alpha is how dark
+   * unlit ground is (e.g. 'rgba(8,4,12,0.42)'). Lights add coloured light on top: a white light of alpha 1
+   * fully cancels the darkness; overlapping and coloured lights tint and (WebGL2) over-brighten the scene.
+   * Between begin/end only `light()` may be called; `endLights` composites the map over the scene.
    */
   beginLights(ambient: string, scale: number): void;
-  light(x: number, y: number, r: number, alpha: number): void;
+  /** `color` defaults to white; Canvas2D ignores it. */
+  light(x: number, y: number, r: number, alpha: number, color?: string): void;
   endLights(): void;
 }
 

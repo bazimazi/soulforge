@@ -124,7 +124,7 @@ registerWeapon({
       g.eachEnemyIn(p.x, p.y, w.radius, (e) => {
         g.damageEnemy(e, s.dmg, { weapon: w, kx: e.x - p.x, ky: e.y - p.y, knock: s.knock, quiet: true });
         if (w.evolved) { e.weak = 0.7; e.weakT = 1; }
-        hits++;
+        if (!e.object) hits++;
       });
       if (w.evolved && hits) g.heal(Math.min(hits, 6) * 0.5, true);
     }
@@ -197,7 +197,7 @@ registerWeapon({
         g.eachEnemyIn(cx, cy, Math.max(len, hgt) / 2 + 20, (e) => {
           if (Math.abs(e.x - cx) < len / 2 + e.r && Math.abs(e.y - cy) < hgt / 2 + e.r) {
             g.damageEnemy(e, s.dmg, { weapon: w, kx: sd, ky: 0, knock: s.knock, crit: s.crit });
-            hits++;
+            if (!e.object) hits++;
           }
         });
         if (w.evolved && hits) g.heal(Math.min(hits, 8) * 1, true);

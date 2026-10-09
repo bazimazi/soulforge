@@ -74,7 +74,8 @@ export class Canvas2DBackend implements Backend {
   }
 
   image(img: Img, x: number, y: number, o: ImageOpts = {}): void {
-    const alpha = o.alpha ?? 1;
+    // no dissolve shader here: a dissolving sprite simply fades
+    const alpha = (o.alpha ?? 1) * (1 - Math.min(1, o.dissolve ?? 0));
     if (alpha <= 0) return;
     this.stats.instances++;
     const ctx = this.ctx;
@@ -93,6 +94,7 @@ export class Canvas2DBackend implements Backend {
     ctx.globalAlpha = alpha;
     ctx.translate(x, y);
     if (o.rot) ctx.rotate(o.rot);
+    if (o.skew) ctx.transform(1, 0, o.skew, 1, 0, 0);
     ctx.scale(sx, sy);
     ctx.drawImage(src, -ox, -oy);
     ctx.restore();
@@ -109,10 +111,29 @@ export class Canvas2DBackend implements Backend {
   glowRGB(x: number, y: number, r: number, cr: number, cg: number, cb: number, alpha: number): void {
     this.glow(x, y, r, `rgb(${cr},${cg},${cb})`, alpha);
   }
-  squareRGB(x: number, y: number, size: number, cr: number, cg: number, cb: number, alpha: number): void {
+  squareRGB(x: number, y: number, size: number, cr: number, cg: number, cb: number, alpha: number, rot = 0): void {
     this.stats.instances++;
-    this.ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`;
-    this.ctx.fillRect(x - size / 2, y - size / 2, size, size);
+    const ctx = this.ctx;
+    ctx.fillStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+    if (!rot) {
+      ctx.fillRect(x - size / 2, y - size / 2, size, size);
+      return;
+    }
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.fillRect(-size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+  lineRGB(x1: number, y1: number, x2: number, y2: number, width: number, cr: number, cg: number, cb: number, alpha: number): void {
+    this.stats.instances++;
+    const ctx = this.ctx;
+    ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha * 0.8})`;
+    ctx.lineWidth = width * 0.6;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
   }
   circle(x: number, y: number, r: number, color: string, alpha: number): void {
     this.ellipse(x, y, r, r, 0, color, alpha);
@@ -245,7 +266,7 @@ export class Canvas2DBackend implements Backend {
     l.setTransform(a * s, b * s, c * s, d * s, e * s, f * s);
     this.inLights = true;
   }
-  light(x: number, y: number, r: number, alpha: number): void {
+  light(x: number, y: number, r: number, alpha: number, _color?: string): void {
     const l = this.lctx;
     l.globalAlpha = U.clamp(alpha, 0, 1);
     l.drawImage(Sprites.light(64), x - r, y - r, r * 2, r * 2);

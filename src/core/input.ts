@@ -2,28 +2,40 @@
  * Keyboard, gamepad and touch input, exposed to the simulation as an {@link InputSource}.
  *
  * - Movement merges WASD/arrows, the left stick (with radial dead-zone) and a virtual touch stick.
- * - The active ability is edge-triggered: one press = one activation, polled once per sim step,
- *   so a press is never lost between steps nor repeated across several of them.
+ * - The dash and the active ability are edge-triggered: one press = one activation, polled once per
+ *   sim step, so a press is never lost between steps nor repeated across several of them.
  */
 import type { InputSource } from '../game/types';
 import { U } from './util';
 
 const DEADZONE = 0.2;
-const ACTIVE_KEYS = new Set(['Space', 'KeyE', 'ShiftLeft', 'ShiftRight']);
-/** Standard-mapping buttons that trigger the ability: A, RB, RT. */
-const ACTIVE_BUTTONS = [0, 5, 7];
+const DASH_KEYS = new Set(['Space', 'ShiftLeft', 'ShiftRight']);
+const ACTIVE_KEYS = new Set(['KeyE', 'KeyQ']);
+/** Standard-mapping buttons that dash: A, LB, LT. */
+const DASH_BUTTONS = [0, 4, 6];
+/** Standard-mapping buttons that trigger the ability: X, RB, RT. */
+const ACTIVE_BUTTONS = [2, 5, 7];
 /** Standard-mapping Start button. */
 const START_BUTTON = 9;
+/** Standard-mapping Back/Select button. */
+const MAP_BUTTON = 8;
 
 export class InputManager implements InputSource {
   private keys = new Set<string>();
   private activeQueued = false;
+  private dashQueued = false;
   private padActiveHeld = false;
+  private padDashHeld = false;
   private padStartHeld = false;
+  private padMapHeld = false;
   private touch: { id: number; sx: number; sy: number; dx: number; dy: number } | null = null;
 
   /** Called on P / Start. */
   onPauseKey: (() => void) | null = null;
+  /** Called on M / Back. */
+  onMapKey: (() => void) | null = null;
+  /** Called on T (damage meter). */
+  onMeterKey: (() => void) | null = null;
   /** Called when the window loses focus. */
   onBlur: (() => void) | null = null;
 
@@ -31,9 +43,12 @@ export class InputManager implements InputSource {
     target.addEventListener('keydown', (e) => {
       if (isTyping(e.target)) return;
       if (!e.repeat && ACTIVE_KEYS.has(e.code)) this.activeQueued = true;
+      if (!e.repeat && DASH_KEYS.has(e.code)) this.dashQueued = true;
       this.keys.add(e.code);
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
       if (e.code === 'KeyP' && !e.repeat) this.onPauseKey?.();
+      if (e.code === 'KeyM' && !e.repeat) this.onMapKey?.();
+      if (e.code === 'KeyT' && !e.repeat) this.onMeterKey?.();
     });
     target.addEventListener('keyup', (e) => this.keys.delete(e.code));
     target.addEventListener('blur', () => {
@@ -95,9 +110,15 @@ export class InputManager implements InputSource {
     const act = ACTIVE_BUTTONS.some((i) => gp.buttons[i]?.pressed);
     if (act && !this.padActiveHeld) this.activeQueued = true;
     this.padActiveHeld = act;
+    const dash = DASH_BUTTONS.some((i) => gp.buttons[i]?.pressed);
+    if (dash && !this.padDashHeld) this.dashQueued = true;
+    this.padDashHeld = dash;
     const start = !!gp.buttons[START_BUTTON]?.pressed;
     if (start && !this.padStartHeld) this.onPauseKey?.();
     this.padStartHeld = start;
+    const map = !!gp.buttons[MAP_BUTTON]?.pressed;
+    if (map && !this.padMapHeld) this.onMapKey?.();
+    this.padMapHeld = map;
   }
 
   private stick(): [number, number] | null {
@@ -132,14 +153,26 @@ export class InputManager implements InputSource {
     return v;
   }
 
+  consumeDash(): boolean {
+    const v = this.dashQueued;
+    this.dashQueued = false;
+    return v;
+  }
+
   /** Queue an ability activation (on-screen button). */
   pressActive(): void {
     this.activeQueued = true;
   }
 
+  /** Queue a dash (on-screen button). */
+  pressDash(): void {
+    this.dashQueued = true;
+  }
+
   /** Drop queued presses (e.g. when closing a menu with Space). */
   flush(): void {
     this.activeQueued = false;
+    this.dashQueued = false;
   }
 }
 

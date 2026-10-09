@@ -269,7 +269,7 @@ CHARS.push({
       p.markT -= dt;
       if (p.markT <= 0) {
         p.markT = 5;
-        let best = null as Enemy | null; g.eachEnemyIn(p.x, p.y, 420, (e) => { if (!best || e.maxHp > best.maxHp) best = e; });
+        let best = null as Enemy | null; g.eachEnemyIn(p.x, p.y, 420, (e) => { if (!e.object && (!best || e.maxHp > best.maxHp)) best = e; });
         if (best) { best.st.hunted = true; g.fx.text(best.x, best.y - best.r - 10, 'MARKED', '#fde047'); }
       }
       if (p.f.alpha) p.auraColor = '#a3e635';
@@ -516,7 +516,7 @@ CHARS.push({
   trait: { name: 'Soul Harvest', desc: 'Every kill grants a Soul (max 100). Each Soul gives +0.4% Might. Souls fade when you stop killing.' },
   active: { name: 'Army of the Night', icon: { g: 'ghost', c: '#86efac' }, cd: 20, desc: 'Summon 8 wraiths for 8 seconds that tear through the horde.',
     use(g, p) {
-      for (let i = 0; i < 8; i++) { const a = i * U.TAU / 8; g.spawnAlly({ kind: 'wraith', x: p.x + Math.cos(a) * 50, y: p.y + Math.sin(a) * 50, dmg: () => (20 + p.level * 3) * p.stats.might * (1 + p.stats.minionDmg), life: 8, speed: 380, sprite: 'wraith', color: '#86efac' }); }
+      for (let i = 0; i < 8; i++) { const a = i * U.TAU / 8; g.spawnAlly({ kind: 'wraith', x: p.x + Math.cos(a) * 50, y: p.y + Math.sin(a) * 50, dmg: () => (20 + p.level * 3) * p.stats.might * (1 + p.stats.minionDmg), life: 8, speed: 380, sprite: 'wraith', color: '#86efac', weapon: { id: 'skill', ability: true } }); }
       g.sfx('summon'); g.fx.flash('#86efac', 0.3);
     } },
   hooks: {
@@ -954,7 +954,7 @@ CHARS.push({
         if (p.feastTick <= 0) {
           p.feastTick = 0.2;
           let total = 0; const dmg = (10 + p.level * 1.5) * p.stats.might;
-          g.eachEnemyIn(p.x, p.y, 245, (e) => { const before = e.hp; g.damageEnemy(e, dmg, { weapon: { def: WEAPONS.blood_nova, id: 'blood_nova', ability: true }, quiet: true }); total += Math.min(before, dmg); g.fx.beam(e.x, e.y, p.x, p.y, '#ef4444', 2, 0.15); });
+          g.eachEnemyIn(p.x, p.y, 245, (e) => { const before = e.object ? 0 : e.hp; g.damageEnemy(e, dmg, { weapon: { def: WEAPONS.blood_nova, id: 'blood_nova', ability: true }, quiet: true }); total += Math.min(before, dmg); g.fx.beam(e.x, e.y, p.x, p.y, '#ef4444', 2, 0.15); });
           if (total > 0) g.heal(Math.min(total * 0.5, p.stats.maxHp * 0.08), true);
         }
       }

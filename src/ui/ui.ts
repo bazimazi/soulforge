@@ -13,11 +13,13 @@ import { ANVIL, ANVIL_BY_ID, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SIGILS, SI
 import type { Reward } from '../data/forge';
 import { MATERIALS, MAT_BY_ID, OMENS, OMEN_BY_ID, PASSIVE_BY_ID, STAGES, STAGE_BY_ID, heatBonus, statFmt, statName } from '../data/passives';
 import { WEAPONS, WH } from '../data/weapons';
-import type { Game } from '../game/game';
+import { DASH, type Game } from '../game/game';
 import type { BoonDef, Chapter, ChestReward, Enemy, EnemyDef, IconSpec, LevelOption, RunSummary } from '../game/types';
 import { Save } from '../meta/save';
 import type { FX } from '../render/fx';
 import { Sprites as S } from '../render/sprites';
+import { DamageMeter, damageReport } from './dmg-meter';
+import { MapView } from './minimap';
 import { Narrator } from './narrator';
 
 /** The slice of the renderer the UI needs (settings screen). */
@@ -129,6 +131,9 @@ interface HudEls {
   abBtn: HudSlot;
   abCh: HudSlot;
   abLbl: HTMLElement;
+  dashBtn: HudSlot;
+  dashCd: HudSlot;
+  dashImg: HTMLImageElement;
   combo: HudSlot;
   comboN: HudSlot;
   comboName: HudSlot;
@@ -154,6 +159,8 @@ class UiController {
   hudEls: HudEls | null = null;
   screenName: string | null = null;
   narrator!: Narrator;
+  map: MapView | null = null;
+  meter: DamageMeter | null = null;
   private hudBoons = -1;
   private hudBuff = '';
   /** Flattened weapon/passive state last rendered into the HUD slot bar (rebuilt on any change). */
@@ -178,6 +185,9 @@ class UiController {
     game.events.on('boon', (options) => this.showBoon(options));
     game.events.on('gameOver', (summary) => { setTimeout(() => this.showGameOver(summary), GAME_OVER_DELAY_MS); });
     game.events.on('notice', (text, color, dur) => this.notice(text, color, dur));
+    game.events.on('runStart', () => { this.map?.reset(); this.meter?.reset(); });
+    input.onMapKey = () => { if (this.game.state === 'play') this.map?.toggle(); };
+    input.onMeterKey = () => { if (this.game.state === 'play') this.meter?.toggle(); };
     this.showTitle();
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
@@ -257,7 +267,7 @@ class UiController {
         <button class="btn" id="settingsBtn">Settings</button>
       </div>
       <div class="whisper">“${esc(tip)}”</div>
-      <div class="title-foot">Best: ${U.fmtTime(d.stats.bestTime)} · Kills: ${U.fmt(d.stats.kills)} · Runs: ${d.stats.runs}<span class="kbd-hint"> &nbsp;|&nbsp; <span class="kbd">WASD</span> move · <span class="kbd">SPACE</span> ability · <span class="kbd">ESC</span> pause</span></div>`);
+      <div class="title-foot">Best: ${U.fmtTime(d.stats.bestTime)} · Kills: ${U.fmt(d.stats.kills)} · Runs: ${d.stats.runs}<span class="kbd-hint"> &nbsp;|&nbsp; <span class="kbd">WASD</span> move · <span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</span></div>`);
     $('playBtn').onclick = () => { audio.play('ui'); this.showChars(); };
     if (canContinue) $('contBtn').onclick = () => { audio.play('buy'); this.selChar = lastC.id; this.selStage = lastS.id; this.startRun(); };
     $('talentsBtn').onclick = () => { audio.play('ui'); this.showTalents(); };
@@ -325,7 +335,7 @@ class UiController {
         <div class="stat-grid">${show.map(([k, v]) => `<div><span class="muted">${statName(k)}</span><b>${v}</b></div>`).join('')}</div>
         <div class="kit">${ic(sig.icon)}<div><h4>${sig.name} <span class="muted" style="font-weight:400;font-size:12px">— signature weapon</span></h4><p>${sig.desc}</p>${evo ? `<p class="muted" style="font-size:12px">Evolves with ${PASSIVE_BY_ID[evo.with]!.name} → <b>${evo.name}</b></p>` : ''}</div></div>
         <div class="kit">${ic({ g: 'star', c: c.colors.accent })}<div><h4>${c.trait.name} <span class="muted" style="font-weight:400;font-size:12px">— trait</span></h4><p>${c.trait.desc}</p></div></div>
-        <div class="kit">${ic(c.active.icon)}<div><h4>${c.active.name} <span class="muted" style="font-weight:400;font-size:12px">— active · ${c.active.cd}s · SPACE</span></h4><p>${c.active.desc}</p></div></div>
+        <div class="kit">${ic(c.active.icon)}<div><h4>${c.active.name} <span class="muted" style="font-weight:400;font-size:12px">— active · ${c.active.cd}s · E</span></h4><p>${c.active.desc}</p></div></div>
       </div></div>
       <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="toTalents">Talents</button><button class="btn primary" id="toSetup" ${cd.unlocked ? '' : 'disabled'}>Continue ▶</button></div>`;
     $('toTalents').onclick = () => { audio.play('ui'); this.showTalents(c.id, () => this.showChars()); };
@@ -564,6 +574,7 @@ class UiController {
       <label class="setting"><span>Reduced motion</span><input type="checkbox" ${s.reducedMotion ? 'checked' : ''} id="motionC"></label>
       <label class="setting"><span>Damage numbers</span><input type="checkbox" ${s.dmgNumbers ? 'checked' : ''} id="dmgC"></label>
       <label class="setting"><span>Bloom &amp; colour grading</span><input type="checkbox" ${s.postfx ? 'checked' : ''} id="postC"></label>
+      <label class="setting"><span>Damage meter (T)</span><input type="checkbox" ${s.dmgMeter ? 'checked' : ''} id="meterC"></label>
       <label class="setting"><span>Show FPS</span><input type="checkbox" ${s.fps ? 'checked' : ''} id="fpsC"></label>
       <label class="setting"><span>Render quality</span><select id="qualS"><option value="0.6" ${s.quality === 0.6 ? 'selected' : ''}>Low</option><option value="0.8" ${s.quality === 0.8 ? 'selected' : ''}>Medium</option><option value="1" ${s.quality === 1 ? 'selected' : ''}>High</option></select></label>
       <div class="setting"><span>Save data</span><div class="row"><button class="btn small" id="expBtn">Export</button><button class="btn small" id="impBtn">Import</button><button class="btn small danger" id="resetBtn">Reset</button></div></div>
@@ -578,6 +589,7 @@ class UiController {
     $('dmgC').onchange = (e) => { s.dmgNumbers = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('postC').onchange = (e) => { s.postfx = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('fpsC').onchange = (e) => { s.fps = val(e).checked; this.applyDisplaySettings(); Save.save(); };
+    $('meterC').onchange = (e) => { s.dmgMeter = val(e).checked; this.meter?.setOpen(s.dmgMeter); Save.save(); };
     $('qualS').onchange = (e) => { s.quality = Number((e.target as HTMLSelectElement).value); this.R.quality = s.quality; this.R.resize(); Save.save(); };
     const txt = $<HTMLTextAreaElement>('saveTxt');
     $('expBtn').onclick = () => { txt.value = Save.export(); this.toast('Save code exported. Copy it somewhere safe.'); };
@@ -592,15 +604,20 @@ class UiController {
       <div id="combo" class="hidden"><b id="comboN">0</b><span id="comboName"></span><div class="cbar"><i id="comboBar"></i></div></div>
       <div id="boons"></div>
       <div class="bottom-left"><div id="buff" class="hidden"></div><div id="reso"></div><div id="hpbar"><i></i><s></s><b id="hpTxt"></b></div><div id="resbar" class="hidden"><i></i></div><div id="reslabel"></div><div id="slots"></div></div>
-      <div id="active"><button type="button" class="ab" id="abBtn" aria-label="Use ability"><img id="abImg" alt=""><span class="cd" id="abCd"></span><span class="charges hidden" id="abCh"></span></button><div class="lbl" id="abLbl"></div></div>
-      <div class="bottom-right" id="hudHint"><span class="kbd">SPACE</span> ability · <span class="kbd">ESC</span> pause</div>`;
+      <div id="mapslot"></div>
+      <div id="active"><div class="abw"><button type="button" class="ab dash" id="dashBtn" aria-label="Dash"><img id="dashImg" alt=""><span class="cd" id="dashCd"></span></button><div class="lbl">Dash</div></div><div class="abw"><button type="button" class="ab" id="abBtn" aria-label="Use ability"><img id="abImg" alt=""><span class="cd" id="abCd"></span><span class="charges hidden" id="abCh"></span></button><div class="lbl" id="abLbl"></div></div></div>
+      <div class="bottom-right" id="hudHint"><span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</div>`;
     const slot = (el: Element | null): HudSlot => new HudSlot(el as HTMLElement);
-    this.hudEls = { xp: slot($('xpbar').firstElementChild), xpTxt: slot($('xpTxt')), kills: slot($('killsTxt')), gold: slot($('goldTxt')), timer: slot($('timer')), heat: $('heatTxt'), stage: $('stageTxt'), bossbar: slot($('bossbar')), bossNm: slot($('bossNm')), bossHp: slot($('bossHp')), hp: slot($('hpbar').firstElementChild), hpS: slot($('hpbar').querySelector('s')), hpTxt: slot($('hpTxt')), resbar: slot($('resbar')), res: slot($('resbar').firstElementChild), reslabel: slot($('reslabel')), slots: $('slots'), abImg: $<HTMLImageElement>('abImg'), abCd: slot($('abCd')), abBtn: slot($('abBtn')), abCh: slot($('abCh')), abLbl: $('abLbl'), combo: slot($('combo')), comboN: slot($('comboN')), comboName: slot($('comboName')), comboBar: slot($('comboBar')), boons: $('boons'), reso: $('reso'), buff: slot($('buff')), bossEp: slot($('bossEp')) };
+    this.hudEls = { xp: slot($('xpbar').firstElementChild), xpTxt: slot($('xpTxt')), kills: slot($('killsTxt')), gold: slot($('goldTxt')), timer: slot($('timer')), heat: $('heatTxt'), stage: $('stageTxt'), bossbar: slot($('bossbar')), bossNm: slot($('bossNm')), bossHp: slot($('bossHp')), hp: slot($('hpbar').firstElementChild), hpS: slot($('hpbar').querySelector('s')), hpTxt: slot($('hpTxt')), resbar: slot($('resbar')), res: slot($('resbar').firstElementChild), reslabel: slot($('reslabel')), slots: $('slots'), abImg: $<HTMLImageElement>('abImg'), abCd: slot($('abCd')), abBtn: slot($('abBtn')), abCh: slot($('abCh')), abLbl: $('abLbl'), dashBtn: slot($('dashBtn')), dashCd: slot($('dashCd')), dashImg: $<HTMLImageElement>('dashImg'), combo: slot($('combo')), comboN: slot($('comboN')), comboName: slot($('comboName')), comboBar: slot($('comboBar')), boons: $('boons'), reso: $('reso'), buff: slot($('buff')), bossEp: slot($('bossEp')) };
     // the HUD markup starts with these states
     this.hudEls.bossbar.toggle('hidden', true); this.hudEls.resbar.toggle('hidden', true); this.hudEls.abCh.toggle('hidden', true); this.hudEls.combo.toggle('hidden', true); this.hudEls.buff.toggle('hidden', true);
     const ab = $('abBtn');
     // blur so a later SPACE keyup can't "click" the focused button and fire the ability twice
     ab.onclick = () => { this.input.pressActive(); ab.blur(); };
+    const db = $('dashBtn');
+    db.onclick = () => { this.input.pressDash(); db.blur(); };
+    this.map = new MapView($('mapslot'), document.body);
+    this.meter = new DamageMeter($('hud').querySelector<HTMLElement>('.bottom-left')!, Save.data.settings.dmgMeter, (open) => { Save.data.settings.dmgMeter = open; Save.save(); });
     // touch players have no Esc/P key
     const pb = $('pauseBtn');
     pb.onclick = () => { pb.blur(); this.showPause(); };
@@ -608,6 +625,7 @@ class UiController {
   buildSlots(): void {
     const g = this.game, p = g.player, E = this.hudEls!;
     E.abImg.src = S.iconURL(p.char.active.icon); E.abLbl.textContent = p.char.active.name; E.abBtn.el.setAttribute('aria-label', 'Use ability: ' + p.char.active.name);
+    E.dashImg.src = S.iconURL({ g: 'boot', c: p.char.colors.accent });
     E.heat.innerHTML = g.heat ? `<span style="color:#fb923c">HEAT ${g.heat}</span>` : ''; E.stage.innerHTML = `<span class="muted" style="font-size:14px">${g.stage.name}</span>`;
     const res = p.char.resource;
     if (res) { E.resbar.toggle('hidden', false); E.res.el.style.background = res.color; E.res.el.style.boxShadow = '0 0 8px ' + res.color; this.resName = res.name; }
@@ -645,6 +663,10 @@ class UiController {
     const cd = p.char.active.cd * p.stats.activeCd;
     E.abCd.setScaleY(p.activeCharges >= p.activeMax ? 0 : Math.max(0, p.activeCdT / cd));
     if (p.activeMax > 1) { E.abCh.toggle('hidden', false); E.abCh.setNum(p.activeCharges, String); } else E.abCh.toggle('hidden', true);
+    E.dashBtn.toggle('ready', p.dashCdT <= 0);
+    E.dashCd.setScaleY(Math.max(0, p.dashCdT / DASH.cd));
+    this.map?.update(g);
+    this.meter?.update(g);
     // kill streak
     if (g.comboTier > 0) {
       const ct = COMBO_TIERS[g.comboTier - 1]!;
@@ -770,7 +792,6 @@ class UiController {
     const rec = (on: boolean): string => (on ? '<i class="rec">NEW RECORD</i>' : '');
     const epitaph = abandoned ? '' : this.narrator.epitaph;
     const cd = Save.charData(sum.charId), c = CHAR_BY_ID[sum.charId]!;
-    const dmgRows = Object.entries(sum.dmgByWeapon).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([id, v]) => { const w = WEAPONS[id]; const nm = w ? w.name : id === 'burn' ? 'Burning' : id === 'bleed' ? 'Bleeding' : id === 'unique' ? 'Relic powers' : id === 'reaction' ? 'Reactions' : id === 'boon' ? 'Boons' : id === 'thorns' ? 'Thorns' : id === 'resonance' ? 'Resonance' : id.replace('ally_', 'Ally: '); return `<tr><td>${esc(nm)}</td><td>${U.fmt(v)}</td></tr>`; }).join('');
     const mats = (Object.keys(sum.mats) as (keyof typeof sum.mats)[]).filter((k) => sum.mats[k]).map((k) => `<span style="color:${MAT_BY_ID[k]!.color}">+${sum.mats[k]} ${MAT_BY_ID[k]!.name}</span>`).join(' · ');
     this.modal(`<h2>${abandoned ? 'Run Abandoned' : sum.eclipse ? 'Consumed by the Eclipse' : 'You Have Fallen'}</h2><div class="sub">${c.name} survived ${U.fmtTime(sum.time)} in ${STAGE_BY_ID[sum.stageId]!.name}${sum.heat ? ' at Heat ' + sum.heat : ''}</div>
       ${epitaph ? `<blockquote class="epitaph">${esc(epitaph)}<cite>— The Keeper</cite></blockquote>` : ''}
@@ -779,7 +800,7 @@ class UiController {
       ${sum.boons.length ? `<div class="row" style="justify-content:center;gap:6px;margin-bottom:10px">${sum.boons.map((id) => { const b = BOON_BY_ID[id]; return b ? `<span class="tag" style="background:#2e1f47;color:#e9d5ff">${ic(b.icon, 'sm')} ${b.name}</span>` : ''; }).join('')}</div>` : ''}
       <div class="rewards"><div class="reward">${ic({ g: 'coin', c: '#f5c542' })}<div><b class="gold">+${U.fmt(sum.gold)} gold</b></div></div><div class="reward">${ic({ g: 'ember', c: '#ff8a3c' })}<div><b style="color:#ff8a3c">+${sum.embers} Soul Embers</b></div></div><div class="reward">${ic({ g: 'book', c: '#c4b5fd' })}<div><b style="color:#c4b5fd">+${U.fmt(sum.charXp)} character XP</b><div class="tip">${c.name} is now level ${cd.level}${res.levelUps ? ` (+${res.levelUps} — new talent points!)` : ''}</div></div></div>${mats ? `<div class="reward">${ic({ g: 'shard', c: '#fde68a' })}<div>${mats}</div></div>` : ''}</div>
       ${res.unlocks.length ? `<div class="unlock-list">${res.unlocks.map((u) => `<div>✦ ${u.text}</div>`).join('')}</div>` : ''}
-      <div class="pause-grid"><div><h3 class="gold" style="margin:0 0 6px">Damage dealt</h3><table class="dmg-table">${dmgRows}</table></div><div><h3 class="gold" style="margin:0 0 6px">Final build</h3><div class="pause-items">${sum.weapons.map((w) => { const d = WEAPONS[w.id]!, evo = w.evolved ? d.evo : undefined; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : d.icon)}" alt=""><span>${evo ? evo.name : d.name} <b>Lv${w.level}</b></span></div>`; }).join('')}${sum.passives.map((x) => { const d = PASSIVE_BY_ID[x.id]!; return `<div class="it"><img src="${S.iconURL(d.icon)}" alt=""><span>${d.name} <b>Lv${x.level}</b></span></div>`; }).join('')}</div></div></div>
+      <div class="pause-grid report-grid"><div><h3 class="gold" style="margin:0 0 6px">Damage report</h3>${damageReport(sum, c)}</div><div><h3 class="gold" style="margin:0 0 6px">Final build</h3><div class="pause-items">${sum.weapons.map((w) => { const d = WEAPONS[w.id]!, evo = w.evolved ? d.evo : undefined; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : d.icon)}" alt=""><span>${evo ? evo.name : d.name} <b>Lv${w.level}</b></span></div>`; }).join('')}${sum.passives.map((x) => { const d = PASSIVE_BY_ID[x.id]!; return `<div class="it"><img src="${S.iconURL(d.icon)}" alt=""><span>${d.name} <b>Lv${x.level}</b></span></div>`; }).join('')}</div></div></div>
       <div class="lvl-actions"><button class="btn" id="goMenu">Main Menu</button><button class="btn" id="goTalents">Talents</button><button class="btn" id="goForge">Forge</button><button class="btn primary" id="goAgain">Play Again</button></div>`);
     $('goMenu').onclick = () => this.showTitle();
     $('goTalents').onclick = () => { this.game.state = 'idle'; $('hud').classList.add('hidden'); this.closeModal(); this.showTalents(sum.charId); };

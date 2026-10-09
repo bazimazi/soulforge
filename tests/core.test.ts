@@ -3,7 +3,9 @@ import { Emitter } from '../src/core/events';
 import { Rng } from '../src/core/rng';
 import { SpatialHash } from '../src/core/spatial-hash';
 import { U } from '../src/core/util';
+import { STAGE_BY_ID } from '../src/data/passives';
 import { FX } from '../src/render/fx';
+import { CHUNK, propLayout } from '../src/render/layout';
 
 describe('Rng', () => {
   it('is deterministic for a seed and differs across seeds', () => {
@@ -140,5 +142,25 @@ describe('U formatting', () => {
     expect(U.fmt(2_500_000)).toBe('2.50M');
     expect(U.fmtTime(125)).toBe('02:05');
     expect(U.esc('<b>"x"</b>')).toBe('&lt;b&gt;&quot;x&quot;&lt;/b&gt;');
+  });
+});
+
+describe('scenery layout', () => {
+  it('is a pure function of the chunk and the stage, and keeps the spawn chunk clear', () => {
+    const stage = STAGE_BY_ID.ashen!;
+    expect(propLayout(0, 0, stage)).toEqual([]);
+    let n = 0;
+    for (let cy = -5; cy <= 5; cy++)
+      for (let cx = -5; cx <= 5; cx++) {
+        const a = propLayout(cx, cy, stage);
+        expect(propLayout(cx, cy, stage)).toEqual(a);
+        for (const p of a) {
+          expect(stage.props).toContain(p.kind);
+          expect(Math.floor(p.x / CHUNK)).toBe(cx);
+          expect(Math.floor(p.y / CHUNK)).toBe(cy);
+        }
+        n += a.length;
+      }
+    expect(n).toBeGreaterThan(0);
   });
 });

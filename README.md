@@ -3,7 +3,8 @@
 A browser survivors-like (Vampire Survivors lineage) with a heavy meta-progression layer — 12 characters,
 31 weapons with evolutions, elemental reactions, resonance, boons, shrines, a narrated story, talent trees, a
 crafting forge and five biomes. Written in strict TypeScript, rendered with a batched **WebGL2** renderer with
-bloom and colour grading (Canvas2D fallback), installable and playable offline as a PWA.
+coloured HDR lighting, cast shadows, dissolve deaths, shockwave refraction, bloom and split-tone grading
+(Canvas2D fallback), installable and playable offline as a PWA.
 
 ```bash
 npm install
@@ -12,20 +13,29 @@ npm run dev        # http://localhost:5173
 
 ## Controls
 
-| Key                           | Action                   |
-| ----------------------------- | ------------------------ |
-| WASD / Arrows / left-stick    | Move                     |
-| Space / E / Shift / gamepad A | Character active ability |
-| 1–4                           | Pick a level-up card     |
-| Esc / P                       | Pause                    |
+| Key                                | Action                                       |
+| ---------------------------------- | -------------------------------------------- |
+| WASD / Arrows / left-stick         | Move                                         |
+| Space / Shift / gamepad A, LB, LT  | Dash (every character; short i-frames, 1.5s) |
+| E / Q / gamepad X, RB, RT          | Character active ability                     |
+| M / gamepad Back / tap the minimap | Toggle the full map                          |
+| T / click its header               | Collapse/expand the live damage meter        |
+| 1–4                                | Pick a level-up card                         |
+| Esc / P                            | Pause                                        |
 
-Touch: left side of the screen is a virtual stick, right side taps the ability.
+Touch: left side of the screen is a virtual stick, right side taps the ability; the on-screen buttons dash and cast.
+
+The world is endless, so the minimap (top right) is a radar centred on you: enemies, elites, bosses, shrines, the
+Hoarder, Hex Totems, Ember Casks, the scenery's structures (pillars, obelisks, ruins…) and pickups (chests, magnets,
+bombs, clocks, food, braziers, loot) drawn with their in-world sprites. Bosses, shrines, chests and power-ups out of range
+are pinned to the rim as arrows. The full map shows the ground explored this run with its structures, the trail you
+walked and your starting point; the run keeps going while it is open.
 
 ## The run
 
 - Enemies scale steeply with time (HP quadratic in minutes, exponential after 30:00 — _the Eclipse_). Elites every ~75s drop chests, a boss every 5 minutes, scripted swarms and encirclements in between. After 25 minutes the events loop with escalating boss tiers, forever.
 - Level up to choose weapons (max 6, 8 levels each) and passives (max 6, 5 levels). A max-level weapon + its paired passive evolves when you open a chest.
-- Each character starts with a **signature weapon** nobody else can use, a **trait** (permanent mechanic), an **active ability** on Space, and a **resource** where relevant (Static, Souls, Flow, Blood…).
+- Each character starts with a **signature weapon** nobody else can use, a **trait** (permanent mechanic), an **active ability** on E, a universal **dash** on Space, and a **resource** where relevant (Static, Souls, Flow, Blood…).
 
 ## Run systems
 
@@ -37,7 +47,14 @@ See [docs/DESIGN.md](docs/DESIGN.md) for the design intent.
   summon) awaken bonuses; tier 3 changes a mechanic.
 - **Boons** — every fallen Herald offers one of three run-long boons (18 in all).
 - **Elite affixes** — Swift, Warded, Vampiric, Frenzied, Molten, Brood, Colossal, Arcane, Necrotic, Phasing.
-- **Boss phases** — Heralds enrage at half health and add barrage, cross-stream and hazard-pool attacks.
+- **New threats** — the Gilded Hoarder (a fleeing treasure thief), Grave Worms that tunnel and erupt under
+  you, Bastion Knights whose shields block frontal hits, Wailing Banshees with telegraphed scream cones, and
+  Hex Totems that empower the horde around them.
+- **Ember Casks** — explosive barrels scattered ahead of you: lure the horde in, break one, and watch the
+  chain reaction. They never hurt you.
+- **Run events** — the Blood Moon (faster horde, +60% XP) and meteor showers that hit both sides.
+- **Boss phases** — Heralds enrage at half health and add barrage, cross-stream, hazard-pool, rotating
+  sweep-beam and gapped-ring attacks.
 - **Shrines** — stand inside to channel: Altar of Blood, Fortune, Soul Well trials, Quickening, Font of Life,
   Cursed Idol.
 - **Kill streaks** — Frenzy → Apocalypse tiers grant Might and Growth; getting hit cuts the streak.
@@ -131,5 +148,8 @@ Measured with `npm run bench` (1600×900, RTX 3050 Ti laptop, Chrome; CPU time p
 | ~500 enemies | 17.2 ms               | 1.07 ms         | 50 ms → 2.2 ms          |
 | ~950 enemies | 57.5 ms               | 2.36 ms         | 294 ms → 5.2 ms         |
 
-Any number of entities renders in ~8 draw calls. Save data lives in `localStorage` (`soulforge_save_v1`, schema
+After the third R&D round (coloured light map, cast shadows, six-frame animation, ribbons, debris; same
+machine, `npm run bench -- --enemies N`): ~220 enemies 0.9 ms, ~870 enemies 2.6 ms of CPU per frame. Sprites
+spread over several atlas pages still batch, because each batch binds up to eight pages and every instance
+picks its own, so a whole frame takes about 20 draw calls. Save data lives in `localStorage` (`soulforge_save_v1`, schema
 versioned and migrated); Settings has export/import codes.

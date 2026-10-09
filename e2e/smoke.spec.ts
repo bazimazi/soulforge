@@ -82,6 +82,16 @@ test('a full run: start, level up, pause, abandon, results', async ({ page, base
   const t = await page.evaluate(() => window.__SF!.game.time);
   expect(t).toBeGreaterThan(1.5);
 
+  // Space dashes (it no longer casts the ability); M toggles the full map
+  await page.keyboard.press('Space');
+  await expect.poll(() => page.evaluate(() => window.__SF!.game.player.dashCdT)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.__SF!.game.player.activeCharges)).toBe(1);
+  await expect(page.locator('#minimap')).toBeVisible();
+  await page.keyboard.press('KeyM');
+  await expect(page.locator('#mapview')).toBeVisible();
+  await page.keyboard.press('KeyM');
+  await expect(page.locator('#mapview')).toBeHidden();
+
   // the on-screen HUD buttons (the only controls on touch screens) are clickable; the ability button
   // pulses forever, so click its centre with the real mouse rather than waiting for it to be "stable"
   const ab = (await page.locator('#abBtn').boundingBox())!;

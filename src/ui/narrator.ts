@@ -138,6 +138,15 @@ export class Narrator {
       case 'elite':
         if (Math.random() < 0.35) this.say('keeper', keeper('elite'), false);
         break;
+      case 'bloodMoon':
+        this.say('keeper', keeper('bloodMoon'), true);
+        break;
+      case 'meteors':
+        if (Math.random() < 0.6) this.say('keeper', keeper('meteors'), false);
+        break;
+      case 'hoarder':
+        if (Math.random() < 0.5) this.say('keeper', keeper('hoarder'), false);
+        break;
       case 'death':
         this.queue = [];
         this.epitaph = this.fill(keeper('death') ?? '');

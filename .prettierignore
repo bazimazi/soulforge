@@ -3,6 +3,7 @@ dev-dist
 coverage
 playwright-report
 test-results
+.claude
 package-lock.json
 public
 # Gameplay content, simulation body, UI templates and procedural art are intentionally dense

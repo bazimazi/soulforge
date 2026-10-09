@@ -22,14 +22,21 @@ export const ENEMIES: Record<string, EnemyDef> = {
   shaman: { name: 'Bone Shaman', hp: 90, speed: 64, dmg: 10, xp: 6, r: 16, mass: 1, col: { body: '#5b21b6', eye: '#a3e635', accent: '#f0abfc' }, heal: { cd: 3.5, r: 170, pct: 0.15 }, lore: 'It chants, and the dead around it knit back together. Kill it first.' },
   watcher: { name: 'Watcher', hp: 60, speed: 84, dmg: 10, xp: 5, r: 15, mass: 0.8, col: { body: '#831843', eye: '#22d3ee' }, ring: { cd: 4.5, n: 8, speed: 180, dmg: 12, range: 420, keep: 300 }, move: 'flutter', lore: 'An eye without a body, weeping bolts of light in every direction.' },
   golem: { name: 'Ash Golem', hp: 700, speed: 44, dmg: 38, xp: 22, r: 34, mass: 12, col: { body: '#57534e', eye: '#fb923c' }, lore: 'The night made it from the rubble of a city. It remembers the shape of streets.' },
+  /* third R&D round: threats that change how you move (docs/DESIGN.md › Third R&D round) */
+  hoarder: { name: 'Gilded Hoarder', hp: 110, speed: 0, dmg: 0, xp: 24, r: 15, mass: 6, col: { body: '#a16207', eye: '#fde047', accent: '#fbbf24' }, noContact: true, flee: { escape: 20, speedMul: 0.87, range: 560, stagger: 0.3, tire: 0.03, winded: 0.65 }, lore: 'A thief who robbed the dead and kept running. Its sack clinks. Catch it before it finds a crack in the dark.' },
+  burrower: { name: 'Grave Worm', hp: 60, speed: 92, dmg: 14, xp: 4, r: 15, mass: 1.5, col: { body: '#78716c', eye: '#fca5a5', accent: '#57534e' }, burrow: { trigger: 90, windup: 0.8, surface: 3.5, r: 80, speedMul: 1.25 }, lore: 'It swims through the graves the way fish swim through water. The ground bulges, then the ground bites.' },
+  bastion: { name: 'Bastion Knight', hp: 260, speed: 46, dmg: 22, xp: 9, r: 22, mass: 8, col: { body: '#64748b', eye: '#fbbf24', accent: '#cbd5e1' }, shield: { arc: Math.PI / 3, front: 0.25, back: 1.25, turn: 4 }, lore: 'A knight of the last citadel, still holding the wall. The wall is a door now, and it walks. Go around.' },
+  banshee: { name: 'Wailing Banshee', hp: 55, speed: 84, dmg: 8, xp: 5, r: 14, mass: 0.6, col: { body: '#c4b5fd', eye: '#f0f9ff', accent: '#7c3aed' }, scream: { cd: 5, windup: 0.9, arc: (70 * Math.PI) / 180, range: 280, dmg: 2.2, slow: 1.6, keep: 210 }, lore: 'She mourns everyone, including you, in advance. When she draws breath, do not stand in front of her.' },
+  totem: { name: 'Hex Totem', hp: 600, speed: 0, dmg: 0, xp: 30, r: 20, mass: 100, col: { body: '#3b0764', eye: '#a855f7', accent: '#e879f9' }, noContact: true, immobile: true, aura: { r: 220, speed: 1.35, dmgTaken: 0.75 }, lore: 'A pole of fused skulls humming with borrowed hate. Everything near it runs faster and bleeds slower. Break it.' },
+  cask: { name: 'Ember Cask', hp: 1, speed: 0, dmg: 0, xp: 0, r: 14, mass: 100, col: { body: '#7c2d12', eye: '#fb923c', accent: '#fde047' }, noSpawn: true, noContact: true, immobile: true, object: true, lore: 'Forge-fire sealed in oak and iron. The Keeper leaves them out there on purpose.' },
 };
 
 export const BOSSES: Record<string, BossDef> = {
-  bone_colossus: { name: 'Bone Colossus', hp: 3200, speed: 72, dmg: 32, xp: 200, r: 48, mass: 40, col: { body: '#e7e0d0', eye: '#7dd3fc' }, attacks: ['charge', 'ring', 'summon'], phase2: ['barrage'], lore: 'A king’s skeleton wearing his army’s bones as armor.' },
+  bone_colossus: { name: 'Bone Colossus', hp: 3200, speed: 72, dmg: 32, xp: 200, r: 48, mass: 40, col: { body: '#e7e0d0', eye: '#7dd3fc' }, attacks: ['charge', 'ring', 'summon'], phase2: ['barrage', 'rings'], lore: 'A king’s skeleton wearing his army’s bones as armor.' },
   blood_matriarch: { name: 'Blood Matriarch', hp: 7000, speed: 90, dmg: 36, xp: 400, r: 46, mass: 40, col: { body: '#450a0a', eye: '#f87171', accent: '#ef4444' }, attacks: ['spiral', 'summon', 'dash'], phase2: ['cross', 'hazard'], hazard: { color: '#991b1b' }, summon: 'spider', lore: 'Mother of every spider in the crypt. She is very protective.' },
-  frost_wyrm: { name: 'Frost Wyrm', hp: 13000, speed: 80, dmg: 42, xp: 700, r: 52, mass: 50, col: { body: '#0e7490', eye: '#bae6fd' }, attacks: ['volley', 'slam', 'ring', 'dash'], phase2: ['barrage', 'hazard'], hazard: { color: '#bae6fd', status: 'chill' }, lore: 'It breathes winter. Where it lands, nothing thaws.' },
-  void_leviathan: { name: 'Void Leviathan', hp: 24000, speed: 64, dmg: 48, xp: 1200, r: 58, mass: 60, col: { body: '#3b0764', eye: '#e879f9' }, attacks: ['spiral', 'pull', 'ring', 'summon'], phase2: ['cross', 'barrage'], summon: 'wraith', lore: 'A piece of the rift, made flesh so it could hunt.' },
-  infernal_titan: { name: 'Infernal Titan', hp: 40000, speed: 70, dmg: 56, xp: 2000, r: 62, mass: 80, col: { body: '#7f1d1d', eye: '#fde047', accent: '#ff6a00' }, attacks: ['slam', 'charge', 'volley', 'summon'], phase2: ['barrage', 'hazard', 'cross'], hazard: { color: '#f97316', status: 'burn' }, summon: 'bomber', lore: 'The night’s general. It burns because it wants to.' },
+  frost_wyrm: { name: 'Frost Wyrm', hp: 13000, speed: 80, dmg: 42, xp: 700, r: 52, mass: 50, col: { body: '#0e7490', eye: '#bae6fd' }, attacks: ['volley', 'slam', 'ring', 'dash'], phase2: ['barrage', 'sweep', 'hazard'], hazard: { color: '#bae6fd', status: 'chill' }, lore: 'It breathes winter. Where it lands, nothing thaws.' },
+  void_leviathan: { name: 'Void Leviathan', hp: 24000, speed: 64, dmg: 48, xp: 1200, r: 58, mass: 60, col: { body: '#3b0764', eye: '#e879f9' }, attacks: ['spiral', 'pull', 'ring', 'summon'], phase2: ['cross', 'sweep', 'barrage'], summon: 'wraith', lore: 'A piece of the rift, made flesh so it could hunt.' },
+  infernal_titan: { name: 'Infernal Titan', hp: 40000, speed: 70, dmg: 56, xp: 2000, r: 62, mass: 80, col: { body: '#7f1d1d', eye: '#fde047', accent: '#ff6a00' }, attacks: ['slam', 'charge', 'volley', 'summon'], phase2: ['barrage', 'rings', 'hazard', 'cross'], hazard: { color: '#f97316', status: 'burn' }, summon: 'bomber', lore: 'The night’s general. It burns because it wants to.' },
 };
 /* elite affixes: elites roll 1 (2 after 10:00, 3 after 22:00) of these; `minute` = earliest appearance */
 export interface AffixDef { id: string; name: string; color: string; desc: string; minute: number }
@@ -56,34 +63,51 @@ export const SPAWN_TABLE: SpawnRow[] = [
   { at: 2, types: { bat: 3, ghoul: 4, skeleton: 4, slime: 2 } },
   { at: 3.5, types: { bat: 3, ghoul: 3, skeleton: 4, slime: 3, imp: 1.5 } },
   { at: 5, types: { ghoul: 3, skeleton: 4, slime: 3, imp: 2, wraith: 3 } },
-  { at: 6.5, types: { ghoul: 2, skeleton: 4, slime: 3, imp: 2, wraith: 3, spider: 3, charger: 1 } },
-  { at: 8.5, types: { skeleton: 3, slime: 2, imp: 2, wraith: 3, spider: 4, charger: 2, bomber: 2 } },
-  { at: 11, types: { skeleton: 3, imp: 2, wraith: 3, spider: 3, charger: 2, bomber: 2, brute: 2, watcher: 1 } },
-  { at: 13.5, types: { skeleton: 2, imp: 2, wraith: 3, spider: 3, charger: 2, bomber: 2, brute: 3, shaman: 2, watcher: 1.5 } },
-  { at: 16, types: { imp: 2, wraith: 3, spider: 3, charger: 3, bomber: 3, brute: 3, shaman: 2, watcher: 1.5, golem: 1 } },
-  { at: 20, types: { bat: 2, wraith: 3, spider: 4, charger: 3, bomber: 3, brute: 4, shaman: 3, watcher: 3, golem: 2 } },
-  { at: 25, types: { wraith: 3, spider: 4, charger: 4, bomber: 4, brute: 4, shaman: 3, watcher: 3, golem: 3, slime: 2 } },
-  { at: 30, types: { spider: 4, charger: 4, bomber: 4, brute: 5, shaman: 4, watcher: 4, golem: 4, wraith: 3 } },
+  { at: 6, types: { ghoul: 3, skeleton: 4, slime: 3, imp: 2, wraith: 3, burrower: 1.5 } },
+  { at: 6.5, types: { ghoul: 2, skeleton: 4, slime: 3, imp: 2, wraith: 3, spider: 3, charger: 1, burrower: 1.5 } },
+  { at: 7, types: { ghoul: 2, skeleton: 4, slime: 3, imp: 2, wraith: 3, spider: 3, charger: 1, burrower: 1.5, banshee: 1.2 } },
+  { at: 8.5, types: { skeleton: 3, slime: 2, imp: 2, wraith: 3, spider: 4, charger: 2, bomber: 2, burrower: 1.5, banshee: 1.5 } },
+  { at: 9, types: { skeleton: 3, slime: 2, imp: 2, wraith: 3, spider: 4, charger: 2, bomber: 2, burrower: 1.5, banshee: 1.5, bastion: 1 } },
+  { at: 11, types: { skeleton: 3, imp: 2, wraith: 3, spider: 3, charger: 2, bomber: 2, brute: 2, watcher: 1, burrower: 1.5, banshee: 1.5, bastion: 1.5 } },
+  { at: 13.5, types: { skeleton: 2, imp: 2, wraith: 3, spider: 3, charger: 2, bomber: 2, brute: 3, shaman: 2, watcher: 1.5, burrower: 2, banshee: 1.5, bastion: 1.5 } },
+  { at: 16, types: { imp: 2, wraith: 3, spider: 3, charger: 3, bomber: 3, brute: 3, shaman: 2, watcher: 1.5, golem: 1, burrower: 2, banshee: 2, bastion: 2 } },
+  { at: 20, types: { bat: 2, wraith: 3, spider: 4, charger: 3, bomber: 3, brute: 4, shaman: 3, watcher: 3, golem: 2, burrower: 2, banshee: 2, bastion: 2.5 } },
+  { at: 25, types: { wraith: 3, spider: 4, charger: 4, bomber: 4, brute: 4, shaman: 3, watcher: 3, golem: 3, slime: 2, burrower: 2.5, banshee: 2.5, bastion: 3 } },
+  { at: 30, types: { spider: 4, charger: 4, bomber: 4, brute: 5, shaman: 4, watcher: 4, golem: 4, wraith: 3, burrower: 3, banshee: 3, bastion: 3 } },
 ];
 
 /* scripted events */
 export const EVENTS: TimedEvent[] = [
   { at: 90, type: 'swarm', enemy: 'bat', n: 40 },
   { at: 225, type: 'ring', enemy: 'ghoul', n: 32 },
+  { at: 240, type: 'hoarder' },
   { at: 300, type: 'boss', boss: 'bone_colossus' },
   { at: 390, type: 'swarm', enemy: 'spider', n: 40 },
   { at: 480, type: 'ring', enemy: 'skeleton', n: 60 },
+  { at: 570, type: 'hoarder' },
   { at: 600, type: 'boss', boss: 'blood_matriarch' },
   { at: 690, type: 'swarm', enemy: 'bat', n: 80 },
-  { at: 780, type: 'ring', enemy: 'wraith', n: 50 },
+  { at: 780, type: 'bloodmoon' },
+  { at: 800, type: 'ring', enemy: 'wraith', n: 50 },
   { at: 900, type: 'boss', boss: 'frost_wyrm' },
   { at: 990, type: 'swarm', enemy: 'bomber', n: 30 },
+  { at: 1020, type: 'meteors' },
   { at: 1080, type: 'ring', enemy: 'brute', n: 30 },
   { at: 1200, type: 'boss', boss: 'void_leviathan' },
-  { at: 1290, type: 'swarm', enemy: 'spider', n: 90 },
+  { at: 1290, type: 'bloodmoon' },
+  { at: 1300, type: 'swarm', enemy: 'spider', n: 90 },
   { at: 1380, type: 'ring', enemy: 'golem', n: 16 },
   { at: 1500, type: 'boss', boss: 'infernal_titan' },
 ];
+/** Special events rotated into the late-game loop (after 25:00): one every third cycle, in this order. */
+export const LATE_SPECIALS: ScriptedEvent[] = [{ type: 'meteors' }, { type: 'bloodmoon' }, { type: 'hoarder' }];
+
+/* Third R&D round tuning — run events and the living map (docs/DESIGN.md) */
+export const BLOOD_MOON = { dur: 45, speed: 1.2, xp: 1.6 };
+export const METEOR_SHOWER = { dur: 14, every: 0.35, spread: 450, r: 70, delay: 1, bossCap: 0.02 };
+export const CASK = { r: 120, chain: 140, chainDelay: 0.15, every: [40, 55], dist: [350, 650], n: [3, 5], max: 15, bossCap: 0.03, fireDur: 2.5 };
+export const HOARDER = { first: [120, 150], every: [150, 210], max: 2 };
+export const TOTEM = { minute: 12, every: [60, 90], dist: [300, 500], max: 3 };
 
 /* Difficulty curves — deliberately steep; meta-progression is what lets you push deeper */
 export const difficulty = function (tSec: number, mods: DifficultyMods): Difficulty {

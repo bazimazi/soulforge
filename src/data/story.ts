@@ -1,6 +1,6 @@
 /* SOULFORGE — story: prologue, the Chronicle (“The Long Night”), the Keeper’s narration, champion barks, boss lines, shrines, reactions, tips */
 
-export type StoryBeat = 'runStart' | 'bossIntro' | 'bossPhase' | 'bossDown' | 'evolve' | 'eclipse' | 'lowHp' | 'revive' | 'shrine' | 'combo' | 'boon' | 'reaction' | 'elite' | 'death';
+export type StoryBeat = 'runStart' | 'bossIntro' | 'bossPhase' | 'bossDown' | 'evolve' | 'eclipse' | 'lowHp' | 'revive' | 'shrine' | 'combo' | 'boon' | 'reaction' | 'elite' | 'death' | 'bloodMoon' | 'meteors' | 'hoarder';
 /** Who is speaking: 'keeper', a character id (kael, lyra, ...) or a boss id. */
 export interface Line { who: string; text: string }
 
@@ -233,6 +233,22 @@ export const KEEPER: Record<StoryBeat, string[]> = {
     'Your soul came back singed. I’ve worked with worse.',
     'Every death leaves something on the anvil. Let’s see what you brought me.',
     'The Night won this one. It keeps a very short list of those.',
+  ],
+  bloodMoon: [
+    'The moon’s bleeding, {name}. They’ll run faster under it. So will the souls. Reap.',
+    'Blood Moon. The dead get hungry and careless. Careless pays well.',
+    'Red sky. Everything out there just had its blood warmed. Yours too, I hope.',
+    'I remember this moon. It came the night the bells stopped. Keep moving.',
+  ],
+  meteors: [
+    'Stars falling. Not the good kind. Mind the shadows on the ground.',
+    'The sky’s throwing its furniture. Let it land on them, not you.',
+    'Old light, coming down hard. Stand where it isn’t going.',
+  ],
+  hoarder: [
+    'A Hoarder! Its sack is fuller than my coffers. Run it down, {name}.',
+    'That little thief has been robbing the dead for a thousand years. Rob it back.',
+    'Gold on legs. Fast legs. Don’t let it reach the dark.',
   ],
 };
 

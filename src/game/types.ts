@@ -148,6 +148,7 @@ export interface DamageSource {
   def?: WeaponDef | null;
   dmgDealt?: number;
   noMark?: boolean;
+  /** Character-kit damage (active, trait, talents): the damage meter files it under `skill`. */
   ability?: boolean;
   /** Damage reflected by thorns (doesn't trigger lifesteal/on-death explosions). */
   thorns?: boolean;
@@ -291,6 +292,8 @@ export interface Player {
   dashOnStep: ((x: number, y: number) => void) | null;
   dashStepDist: number;
   dashAcc: number;
+  /** Seconds until the universal evasive dash is ready again (0 = ready). */
+  dashCdT: number;
   auraColor: string | null;
   /** Character-specific runtime state (resources, cooldowns, toggles). */
   [state: string]: any;
@@ -324,9 +327,26 @@ export interface EnemyDef {
   charge?: { cd: number; speed: number; dur: number; windup: number };
   heal?: { cd: number; r: number; pct: number };
   explode?: { r: number };
+  /** Never deals contact damage (thieves, totems, map objects). */
+  noContact?: boolean;
+  /** Never moves: immune to knockback, pulls and separation pushes. */
+  immobile?: boolean;
+  /** A map object (Ember Cask) rather than a creature: see `Enemy.object`. */
+  object?: boolean;
+  /** Gilded Hoarder: flees from the player and escapes after `escape` seconds. */
+  flee?: { escape: number; speedMul: number; range: number; stagger: number; tire: number; winded: number };
+  /** Grave Worm: tunnels underground, erupts under the player, fights on the surface, burrows again. */
+  burrow?: { trigger: number; windup: number; surface: number; r: number; speedMul: number };
+  /** Bastion Knight: a shield that faces the player. `front` / `back` multiply damage from those arcs. */
+  shield?: { arc: number; front: number; back: number; turn: number };
+  /** Wailing Banshee: a telegraphed scream cone that damages and slows. */
+  scream?: { cd: number; windup: number; arc: number; range: number; dmg: number; slow: number; keep: number };
+  /** Hex Totem: empowers enemies within `r` (speed multiplier, damage-taken multiplier). */
+  aura?: { r: number; speed: number; dmgTaken: number };
 }
 
-export type BossAttackType = 'charge' | 'dash' | 'spiral' | 'volley' | 'slam' | 'pull' | 'summon' | 'ring' | 'barrage' | 'cross' | 'hazard';
+export type BossAttackType =
+  'charge' | 'dash' | 'spiral' | 'volley' | 'slam' | 'pull' | 'summon' | 'ring' | 'barrage' | 'cross' | 'hazard' | 'sweep' | 'rings';
 export interface BossDef extends EnemyDef {
   mass: number;
   attacks: BossAttackType[];
@@ -374,6 +394,13 @@ export interface BossAttack {
   off?: number;
   /** barrage: impact points, detonated one by one. */
   pts?: number[];
+  /** sweep: duration of the current phase (`t` counts down from it). */
+  max?: number;
+  /** sweep: rotation direction (+1 / -1). */
+  dir?: number;
+  /** sweep: beam length and width in world units (the beam starts at the boss centre, angle `ang`). */
+  len?: number;
+  wid?: number;
 }
 
 export interface Enemy {
@@ -427,6 +454,30 @@ export interface Enemy {
   affT?: number;
   /** Bosses: 1, or 2 once enraged at half health. */
   phase?: number;
+  /** Map object (Ember Cask): breaks on any damage, never targeted, never counted as a kill. */
+  object?: boolean;
+  /** Never moves (casks, totems): immune to knockback, pulls and separation pushes. Copied from the def. */
+  immobile?: boolean;
+  /** Deals no contact damage (Hoarder, totems, casks). Copied from the def. */
+  noContact?: boolean;
+  /** Grave Worm underground: not in the spatial grid (untargetable, unhittable), no contact damage. */
+  buried?: boolean;
+  /** Grave Worm cycle: `phase` with `t` seconds left of a `max`-second phase. */
+  burrow?: { phase: 'tunnel' | 'erupt' | 'surface'; t: number; max: number };
+  /** Bastion Knight: shield facing (radians). */
+  face?: number;
+  /** Bastion Knight: sim time of the last blocked hit (shield flash). */
+  blockAt?: number;
+  /** Wailing Banshee: active scream windup (`t` seconds left of `max`, cone centred on `ang`). */
+  scream?: { t: number; max: number; ang: number; arc: number; range: number } | null;
+  /** Wailing Banshee: seconds until the next scream. */
+  screamT?: number;
+  /** Inside a Hex Totem's aura this step: faster and tougher. */
+  hexed?: boolean;
+  /** Hex Totem: aura radius. */
+  auraR?: number;
+  /** Gilded Hoarder: seconds left before it escapes. */
+  escapeT?: number;
   // bosses
   bossId?: string;
   bossTier: number;
@@ -621,6 +672,8 @@ export interface Pickup {
   vx: number;
   vy: number;
   pull: boolean;
+  /** Seconds since the magnet grabbed it (drives the pull's acceleration). */
+  pullT?: number;
   dead: boolean;
   bob: number;
   value?: number;
@@ -724,7 +777,10 @@ export interface Difficulty {
 export type ScriptedEvent =
   | { at?: number; type: 'boss'; boss: string; tierUp?: number }
   | { at?: number; type: 'swarm'; enemy: string; n: number }
-  | { at?: number; type: 'ring'; enemy: string; n: number };
+  | { at?: number; type: 'ring'; enemy: string; n: number }
+  | { at?: number; type: 'bloodmoon' }
+  | { at?: number; type: 'meteors' }
+  | { at?: number; type: 'hoarder' };
 
 /** Aggregated permanent bonuses computed by the meta layer for one character. */
 export interface MetaBonuses {
@@ -778,6 +834,8 @@ export interface RunSummary {
   enemyKills: Record<string, number>;
   bossKillsBy: Record<string, number>;
   dmgByWeapon: Record<string, number>;
+  /** Kills per damage source, keyed like `dmgByWeapon`. */
+  killsBySource: Record<string, number>;
   weapons: { id: string; level: number; evolved: boolean; dmg: number }[];
   passives: { id: string; level: number }[];
   eclipse: boolean;
@@ -825,7 +883,10 @@ export type StoryBeatId =
   | 'boon'
   | 'reaction'
   | 'elite'
-  | 'death';
+  | 'death'
+  | 'bloodMoon'
+  | 'meteors'
+  | 'hoarder';
 
 /** A run-long modifier chosen after a boss falls (data/boons.ts). */
 export interface BoonDef {
@@ -847,4 +908,6 @@ export interface InputSource {
   moveY(): number;
   /** True once per press of the active-ability button. */
   consumeActive(): boolean;
+  /** True once per press of the dash button. */
+  consumeDash(): boolean;
 }

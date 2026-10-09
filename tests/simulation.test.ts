@@ -7,15 +7,15 @@ import { describe, expect, it } from 'vitest';
 import { BOON_BY_ID } from '../src/data/boons';
 import { CHARACTERS } from '../src/data/characters';
 import { STAGES } from '../src/data/passives';
-import { Game } from '../src/game/game';
-import type { InputSource, MetaBonuses } from '../src/game/types';
+import { DASH, Game } from '../src/game/game';
+import type { BossAttackType, DamageInfo, Enemy, InputSource, MetaBonuses } from '../src/game/types';
 import { FX } from '../src/render/fx';
-import { WEAPONS, weaponStats } from '../src/data/weapons';
+import { WEAPONS, WH, weaponStats } from '../src/data/weapons';
 
 const STEP = 1 / 60;
 const noMeta = (): MetaBonuses => ({ stats: {}, flags: {}, weaponMastery: {} });
 
-/** Drifts slowly in a circle (enemies keep up)  and fires the ability every ~4 s — deterministic, frame-based. */
+/** Drifts slowly in a circle (enemies keep up), fires the ability every ~4 s and dashes every ~3 s — deterministic, frame-based. */
 function scriptedInput(): InputSource & { frame: number } {
   return {
     frame: 0,
@@ -27,6 +27,9 @@ function scriptedInput(): InputSource & { frame: number } {
     },
     consumeActive() {
       return this.frame % 240 === 0;
+    },
+    consumeDash() {
+      return this.frame % 180 === 90;
     },
   };
 }
@@ -152,7 +155,7 @@ describe('simulation', () => {
       expect(game.enemies.length).toBeLessThan(700);
       expect(game.pickups.length).toBeLessThan(1000);
     }
-  });
+  }, 20000); // five stages × 30 s of a ~500-enemy late-game horde
 });
 
 /** A started run with an empty field and no weapons, ready for hand-placed scenarios. */
@@ -219,9 +222,82 @@ describe('gameplay rules', () => {
     expect(bombers.every((b) => b.dead)).toBe(true);
   });
 
+  it('a magnet sweeps up hundreds of long-lying gems without any orbiting the player', () => {
+    const g = arena('kael');
+    g.player.invulnT = 1e9;
+    for (let i = 0; i < 600; i++) {
+      const a = i * 2.39996,
+        r = 60 + (i % 50) * 25;
+      g.spawnPickup({ kind: 'gem', x: Math.cos(a) * r, y: Math.sin(a) * r, value: 0, gem: 'blue', age: 90 }); // lying around for 90 s (no XP: a level-up would pause the sim)
+    }
+    g.spawnPickup({ kind: 'magnet', x: 0, y: 0 });
+    steps(g, 4 * 60);
+    expect(g.pickups.filter((k) => k.kind === 'gem')).toEqual([]);
+  });
+
+  it('the damage meter files kit damage under the skill and credits kills per source', () => {
+    const g = arena('kael');
+    const e = g.spawnEnemy('ghoul', 400, 0);
+    g.damageEnemy(e, 5, { weapon: { id: 'flame_cleave', ability: true }, crit: -10 });
+    g.damageEnemy(e, e.hp + 1, { weapon: { id: 'burn' }, crit: -10 });
+    expect(g.dmgByWeapon.skill).toBeCloseTo(5);
+    expect(g.dmgByWeapon.flame_cleave).toBeUndefined();
+    expect(g.killsBySource).toEqual({ burn: 1 });
+    expect(g.summary().killsBySource).toEqual({ burn: 1 });
+  });
+
+  it('the dash moves the player along the input, grants invulnerability and goes on cooldown', () => {
+    let dash = false;
+    const travel = (dashing: boolean) => {
+      dash = dashing;
+      const g = arena(
+        'vesper',
+        {},
+        { moveX: () => 0, moveY: () => 1, consumeActive: () => false, consumeDash: () => (dash ? !(dash = false) : false) },
+      );
+      const y0 = g.player.y;
+      steps(g, 21);
+      return { g, moved: g.player.y - y0 };
+    };
+    const walk = travel(false).moved,
+      { g, moved } = travel(true);
+    // the dash replaces walking for its duration, so it nets a little less than its full distance
+    expect(moved - walk).toBeGreaterThan(DASH.dist * 0.75);
+    expect(g.player.dashCdT).toBeGreaterThan(0);
+    // still cooling down: a second press does nothing
+    const y1 = g.player.y;
+    dash = true;
+    steps(g, 1);
+    expect(dash).toBe(false); // the press was consumed
+    expect(g.player.dashT).toBeLessThanOrEqual(0);
+    expect(g.player.y - y1).toBeLessThan(g.player.stats.speed * STEP * 1.01);
+    steps(g, Math.ceil(DASH.cd / STEP));
+    expect(g.player.dashCdT).toBeLessThanOrEqual(0);
+  });
+
+  it('a dash dodges a hit that would otherwise land', () => {
+    let dash = false;
+    const g = arena(
+      'grom',
+      {},
+      { moveX: () => 0, moveY: () => 0, consumeActive: () => false, consumeDash: () => (dash ? !(dash = false) : false) },
+    );
+    const e = Object.assign(g.spawnEnemy('ghoul', 400, 0), { spawnT: 0 });
+    const hp0 = g.player.hp;
+    dash = true;
+    steps(g, 1);
+    expect(g.player.invulnT).toBeGreaterThan(0);
+    g.hitPlayer(50, e);
+    expect(g.player.hp).toBe(hp0);
+    // once the window closes, the same hit lands
+    steps(g, Math.ceil(DASH.invuln / STEP) + 1);
+    g.hitPlayer(50, e);
+    expect(g.player.hp).toBeLessThan(hp0);
+  });
+
   it('an armed bomber can be escaped by walking away', () => {
     let mx = 0;
-    const g = arena('grom', {}, { moveX: () => mx, moveY: () => 0, consumeActive: () => false });
+    const g = arena('grom', {}, { moveX: () => mx, moveY: () => 0, consumeActive: () => false, consumeDash: () => false });
     const b = Object.assign(g.spawnEnemy('bomber', -120, 0), { spawnT: 0 });
     const hp0 = g.player.hp;
     for (let i = 0; i < 180; i++) {
@@ -431,7 +507,8 @@ describe('run systems', () => {
     expect(k.taken).toBeGreaterThan(0);
     expect(k.reflected).toBeGreaterThanOrEqual(k.taken * 0.5 - 1e-6);
     const gr = struck('grom', 0);
-    const st = gr.g.player.stats, want = gr.taken * st.thorns + st.armor * 2;
+    const st = gr.g.player.stats,
+      want = gr.taken * st.thorns + st.armor * 2;
     expect(gr.reflected).toBeGreaterThanOrEqual(want - 1e-6);
     expect(gr.reflected).toBeLessThanOrEqual(want * st.critDmg + 1e-6); // reflected once, not twice
   });
@@ -504,5 +581,356 @@ describe('run systems', () => {
       expect(errors).toEqual([]);
       expect(w.dmgDealt).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('third round: new threats and the living map', () => {
+  const kill = (g: Game, e: Enemy) => g.damageEnemy(e, e.hp + (e.barrier ?? 0) + 1, { weapon: { id: 'test' }, crit: -10 });
+  const dist = (e: { x: number; y: number }) => Math.hypot(e.x, e.y);
+
+  it('the Gilded Hoarder flees harmlessly and escapes after 20 s', () => {
+    const g = arena('kael');
+    const notices: string[] = [];
+    g.events.on('notice', (t) => notices.push(t));
+    const h = g.spawnEnemy('hoarder', 300, 0);
+    expect(h.def.flee).toBeDefined();
+    expect(h.escapeT).toBe(20);
+    expect(h.speed).toBeGreaterThan(165 * 0.84);
+    expect(h.speed).toBeLessThan(165 * 0.96);
+    steps(g, 60);
+    expect(dist(h)).toBeGreaterThan(360); // ran away from the player
+    // no contact damage, even standing on the player
+    Object.assign(h, { x: 5, y: 0, contactCd: 0 });
+    const hp0 = g.player.hp;
+    steps(g, 1);
+    expect(g.player.hp).toBe(hp0);
+    g.player.invulnT = 1e9; // the arena still spawns a horde
+    steps(g, 60 * 19 + 30);
+    expect(h.dead).toBe(true);
+    expect(notices).toContain('The Hoarder escaped with its gold.');
+    expect(g.kills).toBe(0);
+    expect(g.pickups.some((k) => k.kind === 'chest')).toBe(false);
+  });
+
+  it('a caught Hoarder spills a guaranteed chest and a fountain of loot that scatters', () => {
+    const g = arena('kael');
+    const h = g.spawnEnemy('hoarder', 400, 0);
+    kill(g, h);
+    expect(g.kills).toBe(1);
+    expect(g.pickups.filter((k) => k.kind === 'chest').length).toBe(1);
+    expect(g.pickups.filter((k) => k.kind === 'gold').length).toBeGreaterThanOrEqual(14);
+    expect(g.pickups.filter((k) => k.kind === 'mat').length).toBeGreaterThanOrEqual(3);
+    const gold = g.pickups.find((k) => k.kind === 'gold')!;
+    expect(Math.hypot(gold.vx, gold.vy)).toBeGreaterThan(80);
+    const x0 = gold.x,
+      y0 = gold.y;
+    steps(g, 60);
+    expect(gold.vx).toBe(0);
+    const moved = Math.hypot(gold.x - x0, gold.y - y0);
+    expect(moved).toBeGreaterThan(8);
+    expect(moved).toBeLessThan(60);
+  });
+
+  it('the Grave Worm is untargetable while buried, then erupts under the player', () => {
+    const g = arena('kael');
+    const w = g.spawnEnemy('burrower', 260, 0);
+    expect(w.buried).toBe(true);
+    steps(g, 1);
+    expect(g.nearestEnemy(0, 0, 2000)).toBeNull();
+    expect(WH.targets(g, g.player, 5, 2000)).toEqual([]);
+    g.explode(w.x, w.y, 120, 1e6, { id: 'test' });
+    expect(w.hp).toBe(w.maxHp); // area damage can't reach it underground
+    const hp0 = g.player.hp;
+    let sawWindup = false;
+    for (let i = 0; i < 60 * 6 && w.buried; i++) {
+      steps(g, 1);
+      if (w.burrow!.phase === 'erupt') sawWindup = true;
+    }
+    expect(sawWindup).toBe(true);
+    expect(w.buried).toBe(false);
+    expect(w.burrow!.phase).toBe('surface');
+    expect(g.player.hp).toBeLessThan(hp0);
+    steps(g, 1);
+    expect(g.nearestEnemy(0, 0, 2000)).toBe(w);
+    steps(g, 60 * 3.6);
+    expect(w.buried).toBe(true); // and back under it goes
+  });
+
+  it('the Bastion Knight blocks hits from the front and takes more from behind', () => {
+    const g = arena('kael');
+    const b = Object.assign(g.spawnEnemy('bastion', 200, 0), { spawnT: 99, hp: 1e6, maxHp: 1e6 });
+    expect(b.face).toBeCloseTo(Math.PI); // the shield faces the player
+    const hit = (info: DamageInfo) => {
+      const h0 = b.hp;
+      g.damageEnemy(b, 100, { weapon: { id: 'test' }, crit: -10, ...info });
+      return h0 - b.hp;
+    };
+    expect(hit({ kx: 1, ky: 0 })).toBeCloseTo(25); // pushed away from the player: struck from the front
+    expect(hit({})).toBeCloseTo(25); // no direction: assumed to come from the player
+    expect(hit({ kx: -1, ky: 0 })).toBeCloseTo(125); // struck from behind
+    expect(hit({ kx: 0, ky: 1 })).toBeCloseTo(100); // the flank
+    expect(hit({ kx: 1, ky: 0, weapon: { id: 'burn' } })).toBeCloseTo(100); // ticks bypass the shield
+    expect(b.blockAt).toBeDefined();
+  });
+
+  it('the Wailing Banshee screams a cone that damages and slows the player inside it', () => {
+    const g = arena('kael');
+    const b = Object.assign(g.spawnEnemy('banshee', 160, 0), { spawnT: 0, screamT: 0 });
+    const hp0 = g.player.hp;
+    steps(g, 1);
+    expect(b.scream).toBeTruthy();
+    expect(b.scream!.ang).toBeCloseTo(Math.PI);
+    steps(g, 60);
+    expect(b.scream).toBeNull();
+    expect(g.player.hp).toBeLessThan(hp0);
+    expect(g.player.slowT).toBeGreaterThan(0);
+
+    // sidestep the cone during the windup: no damage, no slow
+    const h = arena('kael');
+    const c = Object.assign(h.spawnEnemy('banshee', 160, 0), { spawnT: 0, screamT: 0 });
+    steps(h, 1);
+    expect(c.scream).toBeTruthy();
+    Object.assign(h.player, { x: 160, y: 200 });
+    const hp1 = h.player.hp;
+    steps(h, 60);
+    expect(h.player.hp).toBe(hp1);
+    expect(h.player.slowT).toBe(0);
+  });
+
+  it('a Hex Totem empowers enemies in its aura: faster and harder to hurt', () => {
+    const g = arena('kael');
+    const t = g.spawnTotem()!;
+    expect(t).toBeTruthy();
+    const d0 = dist(t);
+    expect(d0).toBeGreaterThanOrEqual(299);
+    expect(d0).toBeLessThanOrEqual(501);
+    expect(t.auraR).toBe(220);
+    const near = Object.assign(g.spawnEnemy('brute', t.x * 1.15, t.y * 1.15), { hp: 1e6, maxHp: 1e6, spawnT: 0, speed: 50 });
+    const far = Object.assign(g.spawnEnemy('brute', -t.x, -t.y), { hp: 1e6, maxHp: 1e6, spawnT: 0, speed: 50 });
+    steps(g, 1);
+    expect(near.hexed).toBe(true);
+    expect(far.hexed).toBe(false);
+    const [nx, ny, fx, fy] = [near.x, near.y, far.x, far.y];
+    steps(g, 1);
+    expect(Math.hypot(near.x - nx, near.y - ny) / Math.hypot(far.x - fx, far.y - fy)).toBeCloseTo(1.35, 1);
+    const h0 = near.hp,
+      h1 = far.hp;
+    g.damageEnemy(near, 100, { weapon: { id: 'test' }, crit: -10 });
+    g.damageEnemy(far, 100, { weapon: { id: 'test' }, crit: -10 });
+    expect(h0 - near.hp).toBeCloseTo(75);
+    expect(h1 - far.hp).toBeCloseTo(100);
+    // immovable and harmless
+    const [tx, ty] = [t.x, t.y];
+    g.damageEnemy(t, 1, { weapon: { id: 'test' }, knock: 5, kx: 1, ky: 0 });
+    steps(g, 30);
+    expect([t.x, t.y]).toEqual([tx, ty]);
+    kill(g, t);
+    steps(g, 1);
+    expect(near.hexed).toBe(false);
+  });
+
+  it('Ember Casks are never targeted, break from any damage, chain, and grant nothing themselves', () => {
+    const g = arena('kael');
+    g.meta.stats.lifesteal = 0.5;
+    g.recalc();
+    g.player.hp = 10;
+    const a = g.spawnEnemy('cask', 300, 0),
+      b = g.spawnEnemy('cask', 400, 0),
+      c = g.spawnEnemy('cask', 800, 0);
+    const ghoul = Object.assign(g.spawnEnemy('ghoul', 900, 300), { spawnT: 99, speed: 0 });
+    expect([a, b, c].every((k) => k.object && k.hp === 1)).toBe(true);
+    steps(g, 1);
+    expect(g.nearestEnemy(300, 0, 60)).toBeNull();
+    expect(g.nearestEnemy(0, 0, 2000)).toBe(ghoul);
+    expect(WH.targets(g, g.player, 10, 2000)).toEqual([ghoul]);
+    expect(g.randomEnemyNear(800, 0, 50)).toBeNull();
+    expect(g.enemiesInRadius(350, 0, 200)).toEqual([]);
+    // a projectile breaks it: no lifesteal, no kill, no loot, no streak, no bestiary entry
+    const pickups = g.pickups.length;
+    g.spawnProj({ x: 300, y: 0, angle: 0, speed: 0, r: 10, dmg: 5, pierce: 0, life: 0.2, weapon: { id: 'test' } });
+    steps(g, 1);
+    expect(a.dead).toBe(true);
+    expect(g.player.hp).toBe(10);
+    expect(g.kills).toBe(0);
+    expect(g.combo).toBe(0);
+    expect(g.enemyKills.cask).toBeUndefined();
+    expect(g.pickups.length).toBe(pickups);
+    // the neighbour goes up a beat later; the far one does not
+    expect(b.dead).toBe(false);
+    steps(g, 12);
+    expect(b.dead).toBe(true);
+    expect(c.dead).toBe(false);
+    expect(g.kills).toBe(0);
+  });
+
+  it('every kind of damage breaks a cask, and the blast wrecks the horde but never the player', () => {
+    const sources: ((g: Game, x: number, y: number) => void)[] = [
+      (g, x, y) => g.explode(x, y, 40, 1, { id: 'test' }),
+      (g, x, y) => g.nova(x - 60, y, 90, 1, { id: 'test' }),
+      (g, x, y) => g.arcSlash(x - 50, y, 0, 80, 0.6, 1, { id: 'test' }),
+      (g, x, y) => g.lineDamage(x - 100, y, 0, 200, 20, 1, { id: 'test' }),
+      (g, x, y) => void g.spawnZone({ x, y, r: 40, dmg: 1, tick: 0.1, dur: 1, weapon: { id: 'test' } }),
+      (g, x, y) => g.lightning(x, y, 30, 1, { id: 'test' }), // chains never pick a cask, but the strike's splash does
+      (g, x) =>
+        void g.damageEnemy(
+          g.enemies.find((e) => e.object && e.x === x)!,
+          1,
+          { weapon: null },
+        ),
+    ];
+    for (const hitWith of sources) {
+      const g = arena('kael');
+      const cask = g.spawnEnemy('cask', 60, 0);
+      const fodder = Object.assign(g.spawnEnemy('skeleton', 110, 40), { spawnT: 99, speed: 0 });
+      const hp0 = g.player.hp;
+      steps(g, 1);
+      hitWith(g, cask.x, cask.y);
+      steps(g, 20);
+      expect(cask.dead).toBe(true);
+      expect(fodder.dead).toBe(true); // one-shot by the blast
+      expect(g.player.hp).toBe(hp0);
+    }
+  });
+
+  it('casks left far behind crumble without a trace, and bosses only lose a sliver to a blast', () => {
+    const g = arena('kael');
+    const far = g.spawnEnemy('cask', 5000, 0);
+    steps(g, 1);
+    expect(far.dead).toBe(true);
+    expect(g.kills).toBe(0);
+    const boss = Object.assign(g.spawnBoss('frost_wyrm'), { x: 300, y: 0, spawnT: 99, atkT: 99 });
+    const cask = g.spawnEnemy('cask', 330, 40);
+    steps(g, 1);
+    const hp0 = boss.hp;
+    g.damageEnemy(cask, 1, { weapon: { id: 'test' } });
+    expect(hp0 - boss.hp).toBeGreaterThan(0);
+    expect(hp0 - boss.hp).toBeLessThanOrEqual(boss.maxHp * 0.03 + 1e-6);
+  });
+
+  it('boss sweep and rings run, and can hurt the player', () => {
+    const forceAttack = (bossId: string, attack: BossAttackType) => {
+      const g = arena('kael');
+      const boss = Object.assign(g.spawnBoss(bossId), { x: 260, y: 0, spawnT: 0, phase: 2 });
+      const list = boss.def.attacks!.concat(boss.def.phase2!);
+      Object.assign(boss, { attackIdx: list.indexOf(attack), atkT: 0.001 });
+      expect(boss.attackIdx).toBeGreaterThanOrEqual(0);
+      const hp0 = g.player.hp;
+      const errors: unknown[] = [];
+      const orig = console.error;
+      console.error = (e: unknown) => errors.push(e);
+      let seen = false,
+        shots = 0;
+      try {
+        for (let i = 0; i < 60 * 4; i++) {
+          g.update(STEP);
+          if (boss.attack?.type === attack) seen = true;
+          shots = Math.max(shots, g.eprojs.length);
+          g.player.hp = Math.max(g.player.hp, 1);
+        }
+      } finally {
+        console.error = orig;
+      }
+      expect(errors).toEqual([]);
+      expect(seen).toBe(true);
+      expect(g.player.hp).toBeLessThan(hp0);
+      return shots;
+    };
+    forceAttack('frost_wyrm', 'sweep');
+    forceAttack('void_leviathan', 'sweep');
+    expect(forceAttack('bone_colossus', 'rings')).toBeGreaterThanOrEqual(21 * 2); // rings of 24 with a 3-bolt lane
+    forceAttack('infernal_titan', 'rings');
+  });
+
+  it('the sweep beam state is exposed for the renderer', () => {
+    const g = arena('kael');
+    g.player.invulnT = 1e9;
+    const boss = Object.assign(g.spawnBoss('frost_wyrm'), { x: 260, y: 0, spawnT: 0, phase: 2 });
+    const list = boss.def.attacks!.concat(boss.def.phase2!);
+    Object.assign(boss, { attackIdx: list.indexOf('sweep'), atkT: 0.001 });
+    steps(g, 1);
+    const a = boss.attack!;
+    expect(a.type).toBe('sweep');
+    expect(a.phase).toBe('windup');
+    expect(a.ang).toBeCloseTo(Math.PI);
+    expect([a.len, a.wid]).toEqual([520, 44]);
+    steps(g, 60);
+    expect(boss.attack!.phase).toBe('go');
+    const ang0 = boss.attack!.ang!;
+    steps(g, 30);
+    expect(Math.abs(boss.attack!.ang! - ang0)).toBeGreaterThan(0.5);
+  });
+
+  it('the Blood Moon speeds the horde, multiplies XP and sets again', () => {
+    const g = arena('kael');
+    const plain = g.spawnEnemy('ghoul', 500, 0);
+    kill(g, plain);
+    const gem0 = g.pickups.filter((k) => k.kind === 'gem').pop()!;
+    expect(gem0.value).toBeCloseTo(plain.xp);
+    const beats: string[] = [];
+    g.events.on('story', (b) => beats.push(b));
+    g.runEvent({ type: 'bloodmoon' });
+    expect(g.bloodMoon).toBe(45);
+    expect(beats).toContain('bloodMoon');
+    const red = g.spawnEnemy('ghoul', -500, 0);
+    kill(g, red);
+    const gem1 = g.pickups.filter((k) => k.kind === 'gem').pop()!;
+    expect(gem1.value).toBeCloseTo(red.xp * 1.6);
+    const runner = Object.assign(g.spawnEnemy('ghoul', 0, 600), { spawnT: 0, speed: 60 });
+    const y0 = runner.y;
+    steps(g, 1);
+    expect(y0 - runner.y).toBeCloseTo((60 * 1.2) / 60, 3);
+    g.bloodMoon = 0.5;
+    steps(g, 40);
+    expect(g.bloodMoon).toBe(0);
+  });
+
+  it('a meteor shower batters the horde around the player', () => {
+    const g = arena('kael');
+    g.player.invulnT = 1e9;
+    const horde: Enemy[] = [];
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2,
+        r = 120 + (i % 3) * 110;
+      horde.push(Object.assign(g.spawnEnemy('brute', Math.cos(a) * r, Math.sin(a) * r), { hp: 1e7, maxHp: 1e7, speed: 0, spawnT: 99 }));
+    }
+    g.runEvent({ type: 'meteors' });
+    expect(g.meteorShower).toBe(14);
+    steps(g, 60 * 16);
+    expect(g.meteorShower).toBe(0);
+    expect(horde.filter((e) => e.hp < e.maxHp).length).toBeGreaterThan(3);
+  });
+
+  it('the mid-game with every new threat stays deterministic and error-free', () => {
+    const sim = (seed: number) => {
+      const input = scriptedInput();
+      const game = new Game(new FX(), input);
+      game.start({ charId: 'kael', stageId: 'ashen', meta: noMeta(), seed });
+      (game as unknown as { time: number }).time = 760; // totem, hoarder, casks due; blood moon at 13:00
+      const seen = new Set<string>();
+      const errors: unknown[] = [];
+      const orig = console.error;
+      console.error = (e: unknown) => errors.push(e);
+      try {
+        for (let i = 0; i < 60 * 40; i++) {
+          input.frame = i;
+          game.player.hp = game.player.stats.maxHp;
+          game.player.invulnT = 1;
+          if (game.state === 'levelup') game.pickOption(game.genOptions()[0]!);
+          if (game.state === 'chest') game.closeChest();
+          if (game.state === 'boon') game.pickBoon(game.boonOptions()[0] ?? null);
+          game.update(STEP);
+          for (const e of game.enemies) seen.add(e.type);
+        }
+      } finally {
+        console.error = orig;
+      }
+      expect(errors).toEqual([]);
+      return { game, seen };
+    };
+    const a = sim(42),
+      b = sim(42);
+    expect(fingerprint(a.game)).toBe(fingerprint(b.game));
+    for (const t of ['totem', 'hoarder', 'cask', 'burrower', 'banshee', 'bastion']) expect(a.seen.has(t)).toBe(true);
+    expect(a.game.bloodMoon).toBeGreaterThan(0);
   });
 });

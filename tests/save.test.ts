@@ -50,6 +50,7 @@ function run(over: Partial<RunSummary> = {}): RunSummary {
     enemyKills: { bat: 30, ghoul: 20 },
     bossKillsBy: {},
     dmgByWeapon: {},
+    killsBySource: {},
     weapons: [],
     passives: [],
     eclipse: false,

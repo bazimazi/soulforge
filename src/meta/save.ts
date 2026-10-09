@@ -95,6 +95,8 @@ export interface Settings {
   reducedMotion: boolean;
   /** v3: bloom & colour grading. */
   postfx: boolean;
+  /** Live damage meter open in the HUD (toggled with T). */
+  dmgMeter: boolean;
 }
 
 export interface ForgeProgress {
@@ -146,7 +148,7 @@ export function defaults(): SaveData {
     stats: { runs: 0, kills: 0, bossKills: 0, bestTime: 0, bestLevel: 0, evolves: 0, goldEarned: 0, legendaries: 0, bestHeat10: 0, totalTime: 0, elites: 0, bestCombo: 0, reactions: 0, shrines: 0 },
     stages: { unlocked: ['ashen'], best: {} },
     omens: {}, lastChar: 'kael', lastStage: 'ashen',
-    settings: { sfx: 0.6, music: 0.35, shake: 1, dmgNumbers: true, fps: false, quality: 1, reducedMotion: false, postfx: true },
+    settings: { sfx: 0.6, music: 0.35, shake: 1, dmgNumbers: true, fps: false, quality: 1, reducedMotion: false, postfx: true, dmgMeter: true },
     seen: {}, notices: [],
     story: { prologue: false, read: {} },
   };

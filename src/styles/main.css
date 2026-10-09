@@ -1106,6 +1106,18 @@ textarea {
   left: 50%;
   transform: translateX(-50%);
   text-align: center;
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+}
+/* narrow screens: the bottom-left panel spans the width, so the buttons move above it, under the right thumb */
+@media (max-width: 700px) {
+  #active {
+    left: auto;
+    right: 14px;
+    bottom: 150px;
+    transform: none;
+  }
 }
 #active .ab {
   width: 64px;
@@ -1142,6 +1154,16 @@ textarea {
   border-color: var(--gold);
   box-shadow: 0 0 22px rgba(231, 195, 104, 0.6);
   animation: pulse 1.2s infinite;
+}
+/* the dash is up most of the time: a steady rim instead of the ability's pulse */
+#active .ab.dash {
+  width: 48px;
+  height: 48px;
+}
+#active .ab.dash.ready {
+  border-color: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.25);
+  animation: none;
 }
 @keyframes pulse {
   0%,
@@ -1195,6 +1217,94 @@ textarea {
   .title-foot .kbd-hint {
     display: none;
   }
+}
+#hud {
+  --minimap: 150px;
+}
+@media (max-width: 700px), (max-height: 540px) {
+  #hud {
+    --minimap: 100px;
+  }
+}
+#mapslot {
+  position: absolute;
+  right: 14px;
+  top: 112px;
+}
+#minimap {
+  display: block;
+  width: var(--minimap);
+  height: var(--minimap);
+  border-radius: 50%;
+  pointer-events: auto; /* tap to open the full map */
+  cursor: pointer;
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.6);
+}
+/* on <body>, above the narrator and banners, below modals; the run keeps going while it is open */
+#mapview {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  pointer-events: auto; /* tap to close */
+}
+#mapview canvas,
+#mapview .map-head {
+  width: min(86vw, 1100px);
+}
+#mapview canvas {
+  height: min(72vh, 760px);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.7);
+}
+#mapview .map-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+}
+#mapview .map-title {
+  font-family: 'Cinzel', serif;
+  font-size: 22px;
+  color: var(--gold);
+}
+#mapview .map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 14px;
+  max-width: min(86vw, 1100px);
+  padding: 5px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 12px;
+}
+#mapview .map-legend span {
+  display: inline-flex;
+  align-items: center;
+}
+#mapview .map-legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 5px;
+  border-radius: 50%;
+}
+#mapview .map-legend i.tower {
+  width: 5px;
+  height: 10px;
+  border-radius: 1px;
+}
+#mapview .map-legend img {
+  width: 20px;
+  height: 20px;
+  margin: -4px 1px -4px -4px;
 }
 #hud .bottom-right {
   position: absolute;
@@ -1473,6 +1583,75 @@ textarea {
 .dmg-table td:last-child {
   text-align: right;
   color: var(--gold);
+}
+.report-grid {
+  grid-template-columns: 3fr 2fr;
+}
+@media (max-width: 800px) {
+  .report-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.dmg-report th {
+  padding: 3px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-align: right;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+.dmg-report th:first-child {
+  text-align: left;
+}
+.dmg-report td {
+  text-align: right;
+  white-space: nowrap;
+}
+.dmg-report td:first-child {
+  text-align: left;
+  white-space: normal;
+}
+.dmg-report td:last-child {
+  color: inherit;
+}
+.dmg-report .src {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dmg-report .src img {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+.dmg-report td.share {
+  width: 30%;
+}
+.dmg-report td.share span {
+  display: inline-block;
+  min-width: 32px;
+  color: var(--muted);
+}
+.dm-share {
+  display: inline-block;
+  width: calc(100% - 38px);
+  height: 8px;
+  margin-right: 4px;
+  vertical-align: middle;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.dm-share i {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+.dmg-report tfoot td {
+  border-bottom: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--gold);
+  font-weight: 700;
 }
 .unlock-list {
   margin: 10px 0;
@@ -1885,7 +2064,7 @@ textarea {
 #boons {
   position: absolute;
   right: 14px;
-  top: 112px;
+  top: calc(112px + var(--minimap) + 10px);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1943,6 +2122,121 @@ textarea {
   color: #e9d5ff;
   border-color: #c084fc;
   animation: pulse 1s ease-in-out infinite;
+}
+/* live damage meter, above the health bar (T or click the header to collapse) */
+#dmgmeter {
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+#dmgmeter .dm-head {
+  pointer-events: auto; /* #hud is click-through; the header toggles the meter */
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px 6px 0 0;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+}
+#dmgmeter .dm-head:hover {
+  border-color: var(--gold);
+}
+#dmgmeter .dm-title {
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 11px;
+}
+#dmgmeter .dm-total {
+  color: var(--gold);
+  font-size: 13px;
+}
+#dmgmeter .dm-dps {
+  flex: 1;
+}
+#dmgmeter .dm-caret::after {
+  content: '▾';
+}
+#dmgmeter.collapsed .dm-caret::after {
+  content: '▸';
+}
+#dmgmeter.collapsed .dm-head {
+  width: auto;
+  border-radius: 6px;
+}
+#dmgmeter.collapsed .dm-list {
+  display: none;
+}
+#dmgmeter .dm-list {
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: rgba(0, 0, 0, 0.45);
+}
+#dmgmeter .dm-list:not(:has(.dm-row:not(.hidden)))::before {
+  content: 'No damage yet';
+  display: block;
+  padding: 2px 4px;
+  color: var(--muted);
+}
+#dmgmeter .dm-row {
+  --c: #fff;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 4px 0 2px;
+  border-radius: 4px;
+  overflow: hidden;
+  color: #fff;
+  text-shadow: 0 1px 2px #000;
+}
+#dmgmeter .dm-row + .dm-row {
+  margin-top: 2px;
+}
+#dmgmeter .dm-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--c) 45%, transparent), color-mix(in srgb, var(--c) 20%, transparent));
+  transition: width 0.3s;
+}
+#dmgmeter .dm-row > :not(.dm-bar) {
+  position: relative;
+}
+#dmgmeter .dm-row img {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+#dmgmeter .dm-nm {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+#dmgmeter .dm-rdps {
+  color: #d4d0c4;
+  font-weight: 400;
+}
+#dmgmeter .dm-v {
+  min-width: 78px;
+  text-align: right;
+}
+/* short screens: keep the meter from crowding the arena */
+@media (max-height: 540px) {
+  #dmgmeter .dm-row:nth-child(n + 4) {
+    display: none;
+  }
 }
 
 /* ===================================================================== */
