@@ -34,7 +34,8 @@ export const WH = {
     for (const k in delta) {
       const v = delta[k] as number;
       if (k === 'cd') parts.push('Cooldown ' + (v < 0 ? '' : '+') + Math.round(v * 100) + '%');
-      else if (k === 'area' || k === 'speed' || k === 'duration' || k === 'knock' || k === 'burn' || k === 'pull' || k === 'slow' || k === 'rate') parts.push((N[k] || k) + ' +' + Math.round(v * 100) + '%');
+      else if (k === 'area' || k === 'speed' || k === 'knock' || k === 'burn' || k === 'pull' || k === 'slow' || k === 'rate' || k === 'range') parts.push((N[k] || k) + ' +' + Math.round(v * 100) + '%');
+      else if (k === 'duration') parts.push('Duration +' + v + 's');
       else if (k === 'dmg') parts.push('Damage +' + v);
       else if (k === 'crit') parts.push('Crit +' + Math.round(v * 100) + '%');
       else if (k === 'tick') parts.push('Hits ' + Math.round(-v * 100) + '% faster');
@@ -138,14 +139,23 @@ registerWeapon({
   evo: { with: 'velocity', name: 'Blade Tempest', icon: { g: 'tornado', c: '#c4b5fd' }, desc: 'The blades never fade, spin twice as fast and throw sparks on hit.', stats: { permanent: true, speedMul: 1.8, dmgMul: 1.4, amount: 1 } },
   fire(g, w, s) {
     const p = g.player;
+    // Evolved blades never fade: on each cycle just re-sync them with the current stats, and only
+    // re-summon the ring when the blade count changed (e.g. a new Twin Mirror level).
+    const live: Projectile[] = (w.blades || []).filter((b: Projectile) => !b.dead);
+    if (w.evolved && live.length === s.amount && live.every((b) => b.life > 1e8)) {
+      for (const b of live) { b.dmg = s.dmg; b.r = 13 * s.area; b.knock = s.knock; b.orbit!.radius = 95 * s.area; b.orbit!.speed = 3.2 * s.speed; b.sprite = { kind: 'dagger', color: '#c4b5fd', len: 30 * s.area, wid: 6 * s.area }; }
+      w.blades = live;
+      return;
+    }
+    if (w.evolved) for (const b of live) b.dead = true;
+    w.blades = [];
     for (let i = 0; i < s.amount; i++) {
-      g.spawnProj({
+      w.blades.push(g.spawnProj({
         x: p.x, y: p.y, r: 13 * s.area, dmg: s.dmg, pierce: -1, hitCd: 0.5, life: w.evolved ? 1e9 : s.duration, weapon: w, knock: s.knock,
         sprite: { kind: 'dagger', color: '#c4b5fd', len: 30 * s.area, wid: 6 * s.area }, orbit: { angle: (i / s.amount) * U.TAU, radius: 95 * s.area, speed: 3.2 * s.speed },
-        onHit: w.evolved ? (g2: Game, pr: Projectile, e: Enemy) => { if (rand() < 0.25) g2.spawnProj({ x: e.x, y: e.y, angle: rand() * U.TAU, speed: 300, r: 4, dmg: s.dmg * 0.3, pierce: 1, life: 0.4, weapon: w, sprite: { kind: 'orb', color: '#e9d5ff', size: 3 }, noOnHit: true }); } : null,
-      });
+        onHit: w.evolved ? (g2: Game, pr: Projectile, e: Enemy) => { if (rand() < 0.25) g2.spawnProj({ x: e.x, y: e.y, angle: rand() * U.TAU, speed: 300, r: 4, dmg: pr.dmg * 0.3, pierce: 1, life: 0.4, weapon: w, sprite: { kind: 'orb', color: '#e9d5ff', size: 3 }, noOnHit: true }); } : null,
+      }));
     }
-    if (w.evolved) w.timer = 1e9;
     g.sfx('summon');
   },
 });
@@ -309,6 +319,151 @@ registerWeapon({
   },
 });
 
+/* ---- weapons added with the resonance system: they fill out the thinner elements ---- */
+
+registerWeapon({
+  id: 'ball_lightning', name: 'Ball Lightning', icon: { g: 'lightningball', c: '#7dd3fc' }, tags: ['lightning', 'magic'],
+  desc: 'A slow, crackling sphere drifts toward the horde, zapping everything around it.',
+  base: { dmg: 9, cd: 2.8, amount: 1, speed: 110, area: 1, duration: 4 },
+  levels: [{ dmg: 4 }, { area: 0.2 }, { amount: 1 }, { duration: 1 }, { dmg: 6 }, { area: 0.2, cd: -0.12 }, { amount: 1, dmg: 8 }],
+  evo: { with: 'boots', name: 'Storm Sphere', icon: { g: 'lightningball', c: '#e0f2fe' }, desc: 'Spheres swell, zap twice as often and ricochet off the edges of the world.', stats: { dmgMul: 1.4, areaMul: 1.35, durationMul: 1.4 } },
+  fire(g, w, s) {
+    const p = g.player;
+    for (let i = 0; i < s.amount; i++) {
+      const a = H.aim(g, p, 520) + (i - (s.amount - 1) / 2) * 0.6;
+      g.after(i * 0.2, () => g.spawnProj({
+        x: p.x, y: p.y, angle: a, speed: s.speed, r: 14 * s.area, dmg: s.dmg * 0.5, pierce: -1, hitCd: 0.5, life: s.duration, weapon: w, knock: 0.2,
+        sprite: { kind: 'orb', color: '#7dd3fc', size: 10 * s.area }, light: 110, trail: '#bae6fd', bounce: !!w.evolved,
+        zap: { r: 130 * s.area, cd: w.evolved ? 0.22 : 0.45, dmg: s.dmg },
+      }));
+    }
+    g.sfx('zap');
+  },
+});
+
+registerWeapon({
+  id: 'frost_lance', name: 'Frost Lance', icon: { g: 'shard', c: '#bae6fd' }, tags: ['ice', 'physical'],
+  desc: 'Hurls lances of ice that pierce through a line of enemies and chill them.',
+  base: { dmg: 16, cd: 1.5, amount: 1, speed: 560, pierce: 2, area: 1, slow: 0.3, duration: 2 },
+  levels: [{ dmg: 7 }, { pierce: 1 }, { amount: 1 }, { slow: 0.1, dmg: 6 }, { cd: -0.12 }, { pierce: 2, area: 0.2 }, { amount: 1, dmg: 14 }],
+  evo: { with: 'power', name: 'Glacial Impaler', icon: { g: 'snowflake', c: '#e0f2fe' }, desc: 'Lances freeze what they pierce and burst into a halo of ice shards when they melt.', stats: { dmgMul: 1.5, pierce: 3 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const tg = H.targets(g, p, s.amount, 600);
+    for (let i = 0; i < s.amount; i++) {
+      const t = tg[i % Math.max(1, tg.length)];
+      const a = (t ? Math.atan2(t.y - p.y, t.x - p.x) : H.facing(p)) + (tg.length > i ? 0 : (i - (s.amount - 1) / 2) * 0.2);
+      g.after(i * 0.09, () => g.spawnProj({
+        x: p.x, y: p.y, angle: a, speed: s.speed, r: 8 * s.area, dmg: s.dmg, pierce: s.pierce, life: 1.4, weapon: w, knock: 0.5,
+        sprite: { kind: 'shard', color: '#bae6fd', len: 34 * s.area, wid: 6 * s.area }, trail: '#e0f2fe',
+        statuses: [w.evolved ? { type: 'chill', dur: s.duration, power: s.slow, stackFreeze: 2 } : { type: 'chill', dur: s.duration, power: s.slow }],
+        onExpire: w.evolved ? (g2: Game, pr: Projectile) => { for (let k = 0; k < 6; k++) g2.spawnProj({ x: pr.x, y: pr.y, angle: (k / 6) * U.TAU, speed: 320, r: 5, dmg: s.dmg * 0.4, pierce: 1, life: 0.45, weapon: w, sprite: { kind: 'shard', color: '#e0f2fe', len: 14, wid: 3 }, statuses: [{ type: 'chill', dur: 1.5, power: s.slow }] }); } : null,
+      }));
+    }
+    g.sfx('freeze');
+  },
+});
+
+registerWeapon({
+  id: 'reaper_crescent', name: "Reaper's Crescent", icon: { g: 'scythe', c: '#c084fc' }, tags: ['shadow', 'physical'],
+  desc: 'A spectral scythe spirals out around you and returns, reaping what it passes.',
+  base: { dmg: 22, cd: 2.2, amount: 1, speed: 360, pierce: -1, area: 1, duration: 0.9, knock: 0.8, crit: 0.1 },
+  levels: [{ dmg: 9 }, { area: 0.2 }, { crit: 0.08 }, { amount: 1 }, { dmg: 12, cd: -0.1 }, { area: 0.25 }, { amount: 1, dmg: 18 }],
+  evo: { with: 'fang', name: 'Harvest Moon', icon: { g: 'moon', c: '#e9d5ff' }, desc: 'Twin crescent moons that drink the life of everything they cut.', stats: { dmgMul: 1.4, areaMul: 1.3, amount: 1, crit: 0.1 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const base = H.aim(g, p, 420);
+    for (let i = 0; i < s.amount; i++) {
+      const a = base + (i / s.amount) * U.TAU;
+      g.after(i * 0.12, () => g.spawnProj({
+        x: p.x, y: p.y, angle: a, speed: s.speed, r: 20 * s.area, dmg: s.dmg, pierce: -1, hitCd: 0.5, life: s.duration * 2 + 0.7, weapon: w, crit: s.crit, knock: s.knock,
+        sprite: { kind: 'axe', color: w.evolved ? '#e9d5ff' : '#c084fc', len: 40 * s.area, wid: 8 * s.area }, spin: -12, trail: '#a855f7', boomerang: { t: s.duration, spiral: true }, light: 70,
+        onHit: w.evolved ? (g2: Game) => g2.heal(0.6, true, true) : null,
+      }));
+    }
+    g.sfx('slash');
+  },
+});
+
+registerWeapon({
+  id: 'venom_spores', name: 'Venom Spores', icon: { g: 'leaf', c: '#a3e635' }, tags: ['poison'],
+  desc: 'Lobs swollen spore pods that burst into lingering clouds of poison.',
+  base: { dmg: 5, cd: 2.4, amount: 1, area: 1, duration: 4, tick: 0.4 },
+  levels: [{ amount: 1 }, { dmg: 2 }, { area: 0.2 }, { duration: 1 }, { dmg: 3, amount: 1 }, { tick: -0.08 }, { dmg: 5, area: 0.25 }],
+  evo: { with: 'skull', name: 'Blight Bloom', icon: { g: 'clover', c: '#84cc16' }, desc: 'The clouds come alive: they creep after the nearest enemy and never stop spreading.', stats: { dmgMul: 1.5, areaMul: 1.3, durationMul: 1.5 } },
+  fire(g, w, s) {
+    const p = g.player;
+    for (let i = 0; i < s.amount; i++) {
+      const e = g.randomEnemyNear(p.x, p.y, 420);
+      const tx = e ? e.x : p.x + U.rand(-200, 200), ty = e ? e.y : p.y + U.rand(-200, 200);
+      g.after(i * 0.18, () => g.lob(p.x, p.y, tx, ty, 0.5, '#a3e635', () => {
+        g.spawnZone({ x: tx, y: ty, r: 58 * s.area, dur: s.duration, dmg: s.dmg, tick: s.tick, weapon: w, color: '#a3e635', kind: 'poison', follow: w.evolved ? 'nearest' : undefined, followSpeed: 70 });
+        g.fx.burst(tx, ty, '#a3e635', 10, { speed: 90, life: 0.5 });
+      }));
+    }
+  },
+});
+
+registerWeapon({
+  id: 'radiant_judgment', name: 'Radiant Judgment', icon: { g: 'sun', c: '#fde68a' }, tags: ['holy', 'lightning'],
+  desc: 'Marks enemies with a sigil of light, then smites them with a pillar from the dead sun.',
+  base: { dmg: 30, cd: 2.6, amount: 2, area: 1 },
+  levels: [{ dmg: 10 }, { amount: 1 }, { area: 0.2 }, { dmg: 14 }, { amount: 1, cd: -0.1 }, { area: 0.2, dmg: 12 }, { amount: 2 }],
+  evo: { with: 'idol', name: 'Final Judgment', icon: { g: 'halo', c: '#fff7d6' }, desc: 'Each pillar sears a cross of light and mends your wounds.', stats: { dmgMul: 1.5, areaMul: 1.3, amount: 2 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const tg = H.targets(g, p, s.amount * 3, 520);
+    for (let i = 0; i < s.amount; i++) {
+      const t = tg.length ? tg[Math.floor(rand() * tg.length)]! : null;
+      const x = t ? t.x : p.x + U.rand(-180, 180), y = t ? t.y : p.y + U.rand(-180, 180), r = 52 * s.area;
+      g.fx.telegraphCircle(x, y, r, 0.45, '#fde68a');
+      g.after(0.45 + i * 0.06, () => {
+        g.lightning(x, y, r, s.dmg, w, { color: '#fde68a' });
+        if (w.evolved) { g.lineDamage(x - r * 1.6, y, 0, r * 3.2, 18, s.dmg * 0.5, w, { color: '#fff7d6' }); g.lineDamage(x, y - r * 1.6, Math.PI / 2, r * 3.2, 18, s.dmg * 0.5, w, { color: '#fff7d6' }); g.heal(1, true, true); }
+      });
+    }
+  },
+});
+
+registerWeapon({
+  id: 'soul_lantern', name: 'Soul Lantern', icon: { g: 'ghost', c: '#86efac' }, tags: ['shadow', 'summon'],
+  desc: 'Releases hungry shades that hunt down enemies and pass straight through them.',
+  base: { dmg: 14, cd: 3, amount: 1, minions: 2, duration: 6 },
+  levels: [{ minions: 1 }, { dmg: 6 }, { duration: 2 }, { minions: 1 }, { dmg: 8, cd: -0.15 }, { minions: 1 }, { dmg: 12, duration: 2 }],
+  evo: { with: 'cloak', name: 'Lantern of the Lost', icon: { g: 'ghost', c: '#e9d5ff' }, desc: 'A legion of shades, and each one bursts in soulfire when its time runs out.', stats: { dmgMul: 1.4, minions: 3 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const max = s.minions + s.amount - 1, live = g.allies.filter((a) => a.weapon === w && !a.dead).length;
+    const minionMul = 1 + p.stats.minionDmg;
+    for (let i = 0; i < Math.min(2 + (w.evolved ? 1 : 0), max - live); i++) {
+      const a = rand() * U.TAU;
+      g.spawnAlly({ kind: 'wraith', x: p.x + Math.cos(a) * 24, y: p.y + Math.sin(a) * 24, color: w.evolved ? '#e9d5ff' : '#86efac', life: s.duration, speed: 230, dmg: s.dmg * minionMul, weapon: w, explode: w.evolved ? { r: 70, mult: 1.5 } : undefined });
+    }
+    g.sfx('summon');
+  },
+});
+
+registerWeapon({
+  id: 'cinder_rain', name: 'Cinder Rain', icon: { g: 'meteor', c: '#ff9a3c' }, tags: ['fire'],
+  desc: 'Calls a squall of burning cinders down on the horde around you.',
+  base: { dmg: 10, cd: 3, amount: 6, area: 1, burn: 0.5, duration: 1.2 },
+  levels: [{ amount: 2 }, { dmg: 4 }, { burn: 0.3 }, { amount: 2 }, { dmg: 5, area: 0.2 }, { cd: -0.15 }, { amount: 4, dmg: 6 }],
+  evo: { with: 'crown', name: 'Armageddon', icon: { g: 'meteor', c: '#ff3a1a' }, desc: 'The sky itself falls: true meteors, each one leaving a crater of fire.', stats: { dmgMul: 1.6, areaMul: 1.3 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const n = Math.round(s.amount * (w.evolved ? 0.5 : 1));
+    for (let i = 0; i < n; i++) {
+      const e = g.randomEnemyNear(p.x, p.y, 460);
+      const tx = (e ? e.x : p.x) + U.rand(-60, 60), ty = (e ? e.y : p.y) + U.rand(-60, 60);
+      g.after((i / n) * s.duration, () => {
+        if (w.evolved) g.meteor(tx, ty, 0.7, () => { g.explode(tx, ty, 80 * s.area, s.dmg * 2, w, { burn: s.burn, burnDur: 3, color: '#ff7043' }); g.spawnZone({ x: tx, y: ty, r: 50 * s.area, dur: 2.5, dmg: s.dmg * 0.3, tick: 0.4, weapon: w, color: '#ff7a3c', kind: 'fire', burn: s.burn * 0.5 }); });
+        else { g.fx.arrowFall(tx, ty, '#ff9a3c', 0.3); g.after(0.3, () => g.explode(tx, ty, 38 * s.area, s.dmg, w, { burn: s.burn, burnDur: 2.5, color: '#ff9a3c', small: true, quiet: true, knock: 0.3 })); }
+      });
+    }
+    g.sfx('fire');
+  },
+});
+
 /* Compute effective weapon stats for the player */
 export const weaponStats = function (w: Weapon, p: Player): WeaponStats {
   const def = w.def;
@@ -318,6 +473,8 @@ export const weaponStats = function (w: Weapon, p: Player): WeaponStats {
     for (const k in d) {
       if (k === 'flag') continue;
       if (k === 'cd') s.cd *= 1 + (d[k] as number);
+      // speed levels are relative ("+15%"), whether the base is a multiplier (1) or a velocity (380 px/s)
+      else if (k === 'speed') s.speed += (d[k] as number) * (def.base.speed ?? 1);
       else s[k] += d[k] as number;
     }
   }

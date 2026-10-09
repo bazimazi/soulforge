@@ -178,6 +178,17 @@ export interface TextFx extends Timed {
   small?: boolean;
   crit?: boolean;
   dmg?: boolean;
+  /** Large callout (reactions, streaks) that pops in and lingers. */
+  big?: boolean;
+}
+/** Ground mark left by explosions and deaths; drawn under everything, fades slowly. */
+export interface DecalFx extends Timed {
+  x: number;
+  y: number;
+  r: number;
+  rot: number;
+  color: string;
+  kind: 'scorch' | 'splat';
 }
 export interface CorpseFx extends Timed {
   x: number;
@@ -244,11 +255,24 @@ export class FX {
   bolts: BoltFx[] = [];
   whips: WhipFx[] = [];
   corpses: CorpseFx[] = [];
+  decals: DecalFx[] = [];
   shakeAmt = 0;
+  /** Camera zoom offset from punches (+ in, − out); springs back to 0. */
+  zoom = 0;
+  private zoomV = 0;
+  /** Directional damage indicator: angle towards the attacker (null = all around) and intensity. */
+  hurtAng: number | null = null;
+  hurtA = 0;
+  /** Slow motion / hit-stop requested by the simulation: real-time scale and seconds remaining. */
+  private warpScale = 1;
+  private warpT = 0;
+  private warpMax = 0;
   flashA = 0;
   flashCol = '#fff';
   dmgEnabled = true;
   shakeMul = 1;
+  /** Scales full-screen flashes (reduced motion). */
+  flashMul = 1;
 
   clear(): void {
     this.parts.clear();
@@ -265,8 +289,53 @@ export class FX {
     this.bolts = [];
     this.whips = [];
     this.corpses = [];
+    this.decals = [];
     this.shakeAmt = 0;
     this.flashA = 0;
+    this.zoom = this.zoomV = 0;
+    this.hurtA = 0;
+    this.warpScale = 1;
+    this.warpT = this.warpMax = 0;
+  }
+
+  /**
+   * Request slow motion: simulation time runs at `scale` × real time for `dur` real seconds, easing
+   * back to normal over the last half. The strongest active request wins. Presentation-only: the
+   * simulation still advances in identical fixed steps, so determinism is unaffected.
+   */
+  timeWarp(scale: number, dur: number): void {
+    if (this.warpT > 0 && scale > this.warpScale) return;
+    this.warpScale = scale;
+    this.warpT = this.warpMax = dur;
+  }
+  /** Advance the time warp by real seconds and return the current time scale. */
+  stepWarp(realDt: number): number {
+    if (this.warpT <= 0) return 1;
+    this.warpT -= realDt;
+    if (this.warpT <= 0) return 1;
+    const k = Math.min(1, this.warpT / (this.warpMax * 0.5));
+    return 1 - (1 - this.warpScale) * k;
+  }
+  /** Kick the camera zoom (positive = in). */
+  zoomPunch(a: number): void {
+    this.zoomV += a * 14 * this.shakeMul;
+  }
+  /** The player was hurt: `ang` points at the attacker (null when unknown), `k` 0..1 severity. */
+  hurt(ang: number | null, k: number): void {
+    this.hurtAng = ang;
+    this.hurtA = Math.max(this.hurtA, 0.35 + k * 0.65);
+  }
+  /** Big floating callout (reaction names, streak tiers). */
+  callout(x: number, y: number, text: string, color: string): void {
+    if (this.texts.length > 150) return;
+    // in a dense horde reactions fire constantly: a few readable callouts beat a wall of text
+    let big = 0;
+    for (const t of this.texts) if (t.big && ++big >= 3) return;
+    this.texts.push({ x, y, text, color, life: 1.1, max: 1.1, vy: -55, big: true });
+  }
+  decal(x: number, y: number, r: number, color: string, kind: DecalFx['kind'], life = 9): void {
+    if (this.decals.length >= 220) this.decals.shift();
+    this.decals.push({ x, y, r, color, kind, rot: rnd() * TAU, life, max: life });
   }
 
   burst(x: number, y: number, color: string, n: number, o: BurstOpts = {}): void {
@@ -339,6 +408,7 @@ export class FX {
   explosion(x: number, y: number, r: number, color: string, small?: boolean): void {
     const l = small ? 0.25 : 0.45;
     this.explosions.push({ x, y, r, color, life: l, max: l });
+    if (!small || r > 50) this.decal(x, y, r * 0.75, color, 'scorch', 6);
     this.burst(x, y, color, small ? 6 : Math.min(30, 8 + r * 0.25), { speed: r * 2.2, life: 0.5, size: small ? 3 : 5 });
     if (!small) this.burst(x, y, '#fff', 4, { speed: r, life: 0.3, size: 3 });
   }
@@ -355,7 +425,7 @@ export class FX {
   }
   flash(color: string, a: number): void {
     this.flashCol = color;
-    this.flashA = Math.max(this.flashA, a);
+    this.flashA = Math.max(this.flashA, a * this.flashMul);
   }
   text(x: number, y: number, text: string, color: string, small?: boolean): void {
     if (this.texts.length > 160) this.texts.shift();
@@ -387,6 +457,11 @@ export class FX {
       grav: 200,
     });
     this.burst(e.x, e.y, col.eye, e.boss ? 30 : 4, { speed: 100, life: 0.5, size: 3 });
+    // a wisp of soul drifts up from everything that dies
+    if (this.parts.count < AMBIENT_LIMIT)
+      this.parts.spawn(e.x, e.y - e.r * 0.3, rr(-8, 8), rr(-55, -35), 0.9, e.boss ? 14 : e.elite ? 9 : 5, col.eye, 1 | 2);
+    if (e.r >= 12 && rnd() < (e.boss || e.elite ? 1 : 0.35))
+      this.decal(e.x, e.y + e.r * 0.4, e.r * (e.boss ? 1.6 : 1.1), col.body, 'splat', e.boss ? 20 : 8);
     if (this.corpses.length < 60)
       this.corpses.push({
         x: e.x,
@@ -412,6 +487,11 @@ export class FX {
     decay(this.bolts, dt);
     decay(this.whips, dt);
     decay(this.corpses, dt);
+    decay(this.decals, dt);
+    // critically damped-ish spring back to zero zoom
+    this.zoomV += (-this.zoom * 90 - this.zoomV * 14) * dt;
+    this.zoom = Math.max(-0.25, Math.min(0.25, this.zoom + this.zoomV * dt));
+    this.hurtA = Math.max(0, this.hurtA - dt * 1.8);
     // Frame-rate independent equivalent of the original per-60Hz-frame `vy *= 0.92`.
     const textDamp = Math.pow(0.92, dt * 60);
     let w = 0;

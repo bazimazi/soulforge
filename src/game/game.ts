@@ -11,12 +11,15 @@ import { rand, simRng } from '../core/rng';
 import { SpatialHash } from '../core/spatial-hash';
 import { U } from '../core/util';
 import { CHAR_BASE, CHAR_BY_ID } from '../data/characters';
-import { BOSSES, BOSS_ORDER, ENEMIES, EVENTS, SPAWN_TABLE, difficulty, xpForLevel } from '../data/enemies';
+import { BOONS, BOON_BY_ID } from '../data/boons';
+import { AFFIX_BY_ID, BOSSES, BOSS_ORDER, ELITE_AFFIXES, ENEMIES, EVENTS, SPAWN_TABLE, difficulty, xpForLevel } from '../data/enemies';
 import { MAT_BY_ID, OMEN_BY_ID, PASSIVES, PASSIVE_BY_ID, STAGE_BY_ID, heatBonus } from '../data/passives';
+import { SHRINE_CHANNEL, SHRINE_DEFS, SHRINE_KINDS, SHRINE_RADIUS, TRIAL_TIME } from '../data/shrines';
+import { BRITTLE_MUL, COMBO_GROWTH, COMBO_MIGHT, COMBO_TIERS, COMBO_WINDOW, REACTION_CD, REACTION_DEFS, RESONANCES, comboTier, resonanceTier, type ReactionId, type ResonanceState } from '../data/synergy';
 import { WEAPONS, WH, weaponStats } from '../data/weapons';
 import type { FX } from '../render/fx';
 import type {
-  StatusSpec, Ally, BossAttack, MaterialId, PassiveDef, UpgradeOption, WeaponDef, CharacterDef, ChestReward, DamageInfo, DamageSource, Difficulty, DifficultyMods, Enemy, GameEvents, GameState, InputSource,
+  StatusSpec, Ally, BoonDef, BossAttack, Hazard, MaterialId, Shrine, StoryBeatId, PassiveDef, UpgradeOption, WeaponDef, CharacterDef, ChestReward, DamageInfo, DamageSource, Difficulty, DifficultyMods, Enemy, GameEvents, GameState, InputSource,
   LevelOption, Materials, MetaBonuses, Mine, PassiveInstance, Pickup, PickupSpec, Player, PlayerStats, Projectile, ProjectileSpec,
   RunSummary, ScriptedEvent, StageDef, StatBag, Weapon, Zone,
 } from './types';
@@ -109,6 +112,9 @@ function compact<T extends { dead: boolean }>(arr: T[]): void {
   arr.length = w;
 }
 
+/** Seconds between a bomber arming next to the player and its detonation. */
+const BOMBER_FUSE = 0.5;
+
 const NO_INPUT: InputSource = { moveX: () => 0, moveY: () => 0, consumeActive: () => false };
 
 export class Game {
@@ -189,6 +195,40 @@ export class Game {
   private uStarT = 8;
   private pulseT = 60;
   private tlT = 300;
+  /** True while a hit on the player is being resolved (see hitPlayer). */
+  private hurting = false;
+
+  // run systems: hazards, shrines, boons, streaks, reactions, resonance
+  hazards: Hazard[] = [];
+  shrines: Shrine[] = [];
+  /** Timed run buffs (shrines); their stats fold into recalc(). */
+  buffs: { id: string; t: number; max: number; stats: StatBag }[] = [];
+  boonQueue = 0;
+  combo = 0;
+  comboT = 0;
+  bestCombo = 0;
+  /** Current kill-streak tier (0 = none). */
+  comboTier = 0;
+  reactions = 0;
+  shrinesUsed = 0;
+  /** Weapon resonances (tag synergies), refreshed by recalc(). */
+  resonance: ResonanceState[] = [];
+  /** Active Soul Well trial. */
+  trial: { t: number; x: number; y: number } | null = null;
+  private shrineT = 40;
+  private curseBonus = 0;
+  private harvestMight = 0;
+  /** Warlord's Banner: Might per boss slain (kept apart from `runMight`, which Soulreaver caps). */
+  private bannerMight = 0;
+  private lowHpAt = 0;
+  private secondAt = 0;
+  private eyeT = 6;
+  private stormT = 3;
+  private holySaved = false;
+  /** Phoenix Feather has been spent this run (the HUD greys its icon out). */
+  phoenixUsed = false;
+  private reacted = new Set<string>();
+  private storyOnce = new Set<string>();
 
   constructor(fx: FX, input: InputSource = NO_INPUT) {
     this.fx = fx;
@@ -221,11 +261,14 @@ export class Game {
     this.spawnTable = SPAWN_TABLE[0]!; this._diff = null; this._diffT = -1;
     this.eclipse = false;
     this.runMight = 0;
+    this.hazards = []; this.shrines = []; this.buffs = []; this.boonQueue = 0; this.combo = 0; this.comboT = 0; this.bestCombo = 0; this.comboTier = 0;
+    this.reactions = 0; this.shrinesUsed = 0; this.resonance = []; this.trial = null; this.shrineT = 40; this.curseBonus = 0; this.harvestMight = 0; this.bannerMight = 0;
+    this.lowHpAt = 0; this.secondAt = 0; this.eyeT = 6; this.stormT = 3; this.holySaved = false; this.phoenixUsed = false; this.reacted = new Set(); this.storyOnce = new Set();
     this.createPlayer();
     this.state = 'play'; this.paused = false;
     this.fx.clear();
     this.events.emit('runStart', stage);
-    this.notice('The night begins. Survive.', '#fde68a');
+    this.story('runStart', stage.id);
     if (cfg.tutorial) this.after(2.5, () => this.notice('Collect gems to level up · SPACE for ' + char.active.name, '#cbd5e1', 4));
     if (this.meta.flags.startShield) this.addShield(this.player.stats.maxHp * 0.5);
     for (let i = 0; i < this.player.stats.startLevel; i++) this.gainLevel(true);
@@ -237,7 +280,7 @@ export class Game {
       x: 0, y: 0, px: 0, py: 0, r: 14, char: ch, level: 1, xp: 0, xpNext: xpForLevel(1), hp: 0, shield: 0,
       stats: null as unknown as PlayerStats, dyn: {}, f: Object.assign({}, this.meta.flags), res: 0, resMax: 1, weapons: [], passives: [], weaponMastery: this.meta.weaponMastery,
       face: { x: 1, y: 0 }, move: { x: 0, y: 0 }, movedDist: 0, invulnT: 0, hurtFlash: 0, activeCdT: 0, activeCharges: 1, activeMax: 1, critAllT: 0,
-      rerolls: 0, skips: 0, banishes: 0, revivals: 0, kills: 0, slots: { w: 6 + (this.meta.flags.weaponSlot ? 1 : 0), p: 6 + (this.meta.flags.passiveSlot ? 1 : 0) },
+      rerolls: 0, skips: 0, banishes: 0, revivals: 0, kills: 0, boons: [] as string[], slowT: 0, slots: { w: 6 + (this.meta.flags.weaponSlot ? 1 : 0), p: 6 + (this.meta.flags.passiveSlot ? 1 : 0) },
       walkT: 0, dashT: 0, dashDx: 0, dashDy: 0, dashSpeed: 0, dashOnStep: null, dashStepDist: 30, dashAcc: 0, auraColor: null,
     };
     this.recalc();
@@ -259,6 +302,7 @@ export class Game {
     p.passives.forEach((ps) => acc(ps.def.per, ps.level));
     acc(p.dyn);
     if (this.runMight) add.might = (add.might || 0) + this.runMight;
+    this.accRunStats(acc);
     const s = {} as PlayerStats;
     const g = (k: string) => add[k] || 0;
     s.maxHp = Math.round((base.maxHp + g('maxHp')) * (1 + g('maxHpPct')) * this.mods.playerHp);
@@ -267,8 +311,12 @@ export class Game {
     s.cooldown = base.cooldown * Math.max(0.25, 1 - g('cooldown'));
     s.activeCd = base.activeCd * Math.max(0.3, 1 - g('activeCd'));
     s.magnet = base.magnet * (1 + g('magnet'));
-    for (const k of ['armor', 'regen', 'amount', 'revival', 'rerolls', 'skips', 'banishes', 'pierce', 'startLevel', 'crit', 'critDmg', 'dodge', 'lifesteal', 'thorns', 'eliteDmg', 'burnDmg', 'minionDmg', 'xpBonus', 'matFind', 'knockback', 'chestLuck', 'slowPower', 'execute', 'sigDmg'] as const) s[k] = base[k] + g(k);
+    for (const k of ['armor', 'regen', 'amount', 'revival', 'rerolls', 'skips', 'banishes', 'pierce', 'startLevel', 'crit', 'critDmg', 'dodge', 'lifesteal', 'thorns', 'eliteDmg', 'burnDmg', 'minionDmg', 'xpBonus', 'matFind', 'knockback', 'chestLuck', 'slowPower', 'execute', 'sigDmg', 'reactDmg'] as const) s[k] = base[k] + g(k);
     s.dodge = Math.min(0.75, s.dodge);
+    // luck above the base sharpens crits as well as drops (+1% crit per +10% luck)
+    s.crit += Math.max(0, s.luck - 1) * 0.1;
+    // multiplicative per-run modifiers set by hooks (additive `dyn` can't express "double X" without feeding back into itself)
+    if (p.lifestealMul) s.lifesteal *= p.lifestealMul;
     if (p.noRegen) s.regen = 0;
     s.healing *= this.mods.healing;
     const old = p.stats;
@@ -277,6 +325,27 @@ export class Game {
     if (p.hp > s.maxHp) p.hp = s.maxHp;
     // cache weapon stats
     p.weapons.forEach((w) => { const ws = (w.s = weaponStats(w, p)); if (w.def.mod) w.def.mod(this, w, ws, p); });
+  }
+
+  /** Fold run-only bonuses (resonance, boons, shrine buffs, kill streak, curses) into a recalc. */
+  private accRunStats(acc: (o: StatBag, m?: number) => void): void {
+    const p = this.player, f = p.f;
+    // resonance: count weapons per tag
+    const counts: Record<string, number> = {};
+    for (const w of p.weapons) for (const t of w.def.tags || []) counts[t] = (counts[t] || 0) + 1;
+    this.resonance = [];
+    for (const def of RESONANCES) {
+      const n = counts[def.tag] || 0, tier = resonanceTier(def, n);
+      if (n) this.resonance.push({ def, count: n, tier });
+      def.tiers.forEach((t, i) => { const on = i < tier; if (t.stats && on) acc(t.stats); if (t.flag) f[t.flag] = on; });
+    }
+    for (const id of p.boons) { const b = BOON_BY_ID[id]; if (b && b.stats) acc(b.stats); }
+    for (const b of this.buffs) acc(b.stats);
+    const ct = this.comboTier * (f.b_frenzy ? 2 : 1);
+    if (ct) acc({ might: COMBO_MIGHT * ct, growth: COMBO_GROWTH * ct });
+    if (this.curseBonus) acc({ curse: this.curseBonus });
+    if (this.harvestMight) acc({ might: this.harvestMight });
+    if (this.bannerMight) acc({ might: this.bannerMight });
   }
 
   addWeapon(id: string): Weapon {
@@ -306,13 +375,16 @@ export class Game {
     this.updateMines(dt);
     this.updateAllies(dt);
     this.updatePickups(dt);
+    this.updateHazards(dt);
+    this.updateShrines(dt);
     this.updateMetaEffects(dt);
     if (this.frame % 12 === 0) this.recalc();
-    if (!this.eclipse && this.time >= 1800) { this.eclipse = true; this.notice('THE ECLIPSE — the horde grows without end', '#c084fc', 5); this.fx.flash('#c084fc', 0.7); this.sfx('boss'); }
+    if (!this.eclipse && this.time >= 1800) { this.eclipse = true; this.notice('THE ECLIPSE — the horde grows without end', '#c084fc', 5); this.fx.flash('#c084fc', 0.7); this.fx.timeWarp(0.3, 1.2); this.sfx('boss'); this.story('eclipse'); }
     // modal triggers (a hook may already have ended the run this step)
     if (this.state !== 'play') return;
     if (this.levelQueue > 0) { this.state = 'levelup'; this.events.emit('levelUp', this.genOptions()); }
     else if (this.chestQueue.length) { const c = this.chestQueue.shift()!; this.state = 'chest'; this.openChest(c); }
+    else if (this.boonQueue > 0) { this.boonQueue--; const opts = this.boonOptions(); if (opts.length) { this.state = 'boon'; this.events.emit('boon', opts); } }
   }
 
   /** Record pre-step positions so the renderer can interpolate between steps. */
@@ -344,6 +416,7 @@ export class Game {
     if (l > 0.01) { p.face.x = mx / (l || 1); p.face.y = my / (l || 1); p.walkT += dt * 9; }
     let spd = st.speed;
     if (p.f.adrenaline && p.hp < st.maxHp * 0.3) spd *= 1.2;
+    if (p.slowT > 0) { p.slowT -= dt; spd *= 0.6; }
     if (p.dashT > 0) {
       p.dashT -= dt;
       const step = p.dashSpeed * dt;
@@ -390,34 +463,78 @@ export class Game {
     if (!quiet) { this.fx.text(p.x, p.y - 30, '+' + Math.round(amt), '#86efac'); this.sfx('heal'); }
     if (!silent && p.hp - before > 0.5) this.fx.burst(p.x, p.y, '#86efac', 3, { speed: 30, life: 0.5, size: 3, up: true });
   }
-  addShield(amt: number): void { const p = this.player; const cap = p.stats.maxHp * (p.shieldCap || 0.5) * p.stats.shieldPower; p.shield = Math.min(cap, p.shield + amt); }
+  /** Add shield, capped at a share of max health (the character's cap, or `capFrac` if larger). */
+  addShield(amt: number, capFrac = 0): void { const p = this.player; const cap = p.stats.maxHp * Math.max(capFrac, p.shieldCap || 0.5) * p.stats.shieldPower; p.shield = Math.min(cap, p.shield + amt); }
   hitPlayer(dmg: number, src?: { def?: { name: string }; color?: string } | null): void {
     const p = this.player;
-    if (p.invulnT > 0 || p.hp <= 0) return;
+    // A hook reacting to this hit (thorns, retaliation novas…) can kill a bomber whose blast would
+    // re-enter here before this hit has applied its i-frames; one hit at a time.
+    if (p.invulnT > 0 || p.hp <= 0 || this.hurting) return;
+    this.hurting = true;
+    try { this.applyPlayerHit(dmg, src); } finally { this.hurting = false; }
+  }
+  private applyPlayerHit(dmg: number, src?: { def?: { name: string }; color?: string } | null): void {
+    const p = this.player;
     if (rand() < p.stats.dodge) { this.fx.text(p.x, p.y - 30, 'DODGE', '#94a3b8'); const h = p.char.hooks; if (h && h.onDodge) h.onDodge(this, p, src); return; }
     dmg = Math.max(1, dmg - p.stats.armor) * (p.dyn.dmgTaken || 1);
     const h = p.char.hooks;
     if (h && h.onHurt) dmg = h.onHurt(this, p, dmg, src);
+    // thorns (Retaliation): whoever strikes you takes a share back; Grom adds a multiple of his Armor
+    const foe = src as Enemy | null | undefined;
+    if (foe && foe.hp != null && !foe.dead && (p.stats.thorns > 0 || p.thornsArmor)) this.damageEnemy(foe, dmg * p.stats.thorns + p.stats.armor * (p.thornsArmor || 0), { weapon: { id: 'thorns', thorns: true }, quiet: true, thorns: true });
     if (p.shield > 0) { const a = Math.min(p.shield, dmg); p.shield -= a; dmg -= a; this.fx.burst(p.x, p.y, '#7dd3fc', 4, { speed: 60, life: 0.3 }); }
     if (dmg <= 0) return;
     if (p.blood > 0) { const a = Math.min(p.blood, dmg * 0.5); p.blood -= a; dmg -= a; }
     p.hp -= dmg; p.hurtFlash = 0.15; p.invulnT = Math.max(p.invulnT, 0.12);
-    this.lastHitBy = src && src.def ? src.def.name : src && src.color ? 'projectile' : 'unknown';
+    this.lastHitBy = src && src.def ? src.def.name : src && src.color ? 'a bolt in the dark' : 'the night';
     this.fx.shake(Math.min(8, 2 + dmg * 0.08)); this.fx.text(p.x, p.y - 30, '-' + Math.round(dmg), '#f87171', true); this.sfx('hurt');
-    if (p.hp <= 0) this.playerDown();
+    const sx = (src as { x?: number } | null | undefined)?.x, sy = (src as { y?: number } | null | undefined)?.y;
+    this.fx.hurt(sx == null || sy == null ? null : Math.atan2(sy - p.y, sx - p.x), Math.min(1, dmg / (p.stats.maxHp * 0.15)));
+    if (this.combo > 0) this.combo = Math.floor(this.combo * 0.75);
+    if (p.hp <= 0) { this.playerDown(); return; }
+    const low = p.hp < p.stats.maxHp * 0.3;
+    if (low && p.f.b_second && this.secondAt <= this.time) { this.secondAt = this.time + 60; this.addShield(p.stats.maxHp * 0.6, 0.6); this.setInvuln(2); this.fx.ring(p.x, p.y, 120, '#86efac'); this.fx.text(p.x, p.y - 44, 'SECOND WIND', '#86efac'); this.sfx('heal'); }
+    if (low && this.lowHpAt <= this.time) { this.lowHpAt = this.time + 90; this.story('lowHp'); }
   }
   private playerDown(): void {
     const p = this.player, h = p.char.hooks;
     if (h && h.onFatal && h.onFatal(this, p)) return;
-    if (p.revivals > 0) {
-      p.revivals--; p.hp = p.f.fullRevive ? p.stats.maxHp : p.stats.maxHp * 0.5; this.setInvuln(3);
-      if (p.f.fullRevive) this.eachEnemyIn(p.x, p.y, 320, (e) => { if (!e.boss) this.damageEnemy(e, e.hp + 1, { quiet: true, weapon: null }); else this.damageEnemy(e, e.maxHp * 0.1, { quiet: true, weapon: null }); });
-      this.fx.flash('#fde68a', 0.8); this.fx.ring(p.x, p.y, 320, '#fde68a'); this.fx.text(p.x, p.y - 40, 'REVIVED', '#fde68a'); this.sfx('revive');
-      this.notice('You rise again. ' + p.revivals + ' revival' + (p.revivals === 1 ? '' : 's') + ' left.', '#fde68a');
+    if (p.f.res_holy && !this.holySaved) {
+      this.holySaved = true; p.hp = p.stats.maxHp * 0.5; this.setInvuln(2.5);
+      this.fx.flash('#fde68a', 0.6); this.fx.ring(p.x, p.y, 200, '#fde68a'); this.fx.text(p.x, p.y - 40, 'SANCTUM', '#fde68a'); this.sfx('revive'); this.fx.timeWarp(0.25, 0.8);
       return;
     }
-    p.hp = 0; this.state = 'over'; this.sfx('death'); this.fx.flash('#7f1d1d', 1.0); this.fx.shake(20);
+    if (p.f.b_phoenix && !this.phoenixUsed) {
+      // the rebirth has to clear real space at any point of the night: the flames consume the
+      // horde around you outright, scorch bosses and leave them burning
+      this.phoenixUsed = true; p.hp = p.stats.maxHp; this.setInvuln(3);
+      const src = { id: 'boon' }, burn = (40 + p.level * 6) * p.stats.might;
+      this.annihilate(p.x, p.y, 340, 0.15, src);
+      this.eachEnemyIn(p.x, p.y, 340, (e) => this.applyStatus(e, 'burn', { dur: 5, dps: burn }));
+      this.fx.explosion(p.x, p.y, 340, '#ff7a3c'); this.fx.ring(p.x, p.y, 340, '#ffb347'); this.fx.shake(14);
+      this.fx.flash('#ff7a3c', 0.8); this.fx.text(p.x, p.y - 40, 'REBORN IN FIRE', '#ff9a3c'); this.sfx('revive'); this.fx.timeWarp(0.2, 1);
+      this.notice('Phoenix Feather: you rise from the ashes. The feather is spent.', '#ff9a3c', 4);
+      this.story('revive');
+      return;
+    }
+    if (p.revivals > 0) {
+      p.revivals--; p.hp = p.f.fullRevive ? p.stats.maxHp : p.stats.maxHp * 0.5; this.setInvuln(3);
+      if (p.f.fullRevive || p.f.b_angel) this.annihilate(p.x, p.y, 320, 0.1, null);
+      this.fx.flash('#fde68a', 0.8); this.fx.ring(p.x, p.y, 320, '#fde68a'); this.fx.text(p.x, p.y - 40, 'REVIVED', '#fde68a'); this.sfx('revive'); this.fx.timeWarp(0.2, 1);
+      this.notice('You rise again. ' + p.revivals + ' revival' + (p.revivals === 1 ? '' : 's') + ' left.', '#fde68a');
+      this.story('revive');
+      return;
+    }
+    p.hp = 0; this.state = 'over'; this.sfx('death'); this.fx.flash('#7f1d1d', 1.0); this.fx.shake(20); this.fx.timeWarp(0.15, 1.5);
+    this.story('death');
     this.events.emit('gameOver', this.summary());
+  }
+  /** Destroy every non-boss enemy around (x, y), barrier and all; bosses lose `bossPct` of their max health. */
+  private annihilate(x: number, y: number, r: number, bossPct: number, w: DamageSource | null): void {
+    this.eachEnemyIn(x, y, r, (e) => {
+      if (e.boss) this.damageEnemy(e, e.maxHp * bossPct, { quiet: true, weapon: w });
+      else this.damageEnemy(e, e.hp + (e.barrier ?? 0) + 1, { quiet: true, weapon: w, noBlast: true, execute: true });
+    });
   }
 
   /* ==================== WEAPONS ==================== */
@@ -495,11 +612,12 @@ export class Game {
         const d = Math.hypot(e.x - x, e.y - y);
         if (d - e.r <= n.r && d + e.r >= prev - 20) {
           n.hit.add(e);
+          // shattering novas mark what they touch: a frozen, marked enemy bursts on death (see killEnemy)
+          if (o.shatter) e.st.shatter = { dmg: dmg * 0.6, w };
           this.damageEnemy(e, dmg, { weapon: w, kx: e.x - x, ky: e.y - y, knock: o.knock == null ? 1 : o.knock, quiet: !!o.quiet, crit: o.crit || 0 });
           if (o.status) this.applyStatus(e, o.status.type, o.status);
           if (o.burn) this.applyStatus(e, 'burn', { dur: 3, dps: dmg * o.burn });
           if (o.onHit) o.onHit(e);
-          if (o.shatter && e.st.freeze && e.hp <= 0) { /* handled by frost kill */ }
         }
       });
       if (n.r < n.maxR) this.after(0.016, step); else n.dead = true;
@@ -568,16 +686,19 @@ export class Game {
     const h = p.char.hooks;
     if (h && h.onDamage && !info.execute) h.onDamage(this, p, e, info);
     let crit = false;
+    const tags = w && w.def ? w.def.tags : undefined, st = e.st, f = p.f;
     if (!info.execute) {
       const cc = p.stats.crit + (info.critBonus ?? 0) + (p.critAllT > 0 ? 1 : 0);
       crit = rand() < cc;
       if (crit) dmg *= p.stats.critDmg;
       dmg *= info.mult ?? 1;
       if (e.elite || e.boss) dmg *= 1 + p.stats.eliteDmg;
-      if (e.weakT > 0) { /* enemy weakened: it deals less, not takes more */ }
-      if (e.st.hunted && !info.mult) { /* handled by hook */ }
+      if (st.brittle) dmg *= BRITTLE_MUL;
+      if (f.res_ice && (st.chill || st.freeze)) dmg *= 1.2;
+      if (f.res_blight && tags && tags.includes('poison')) { dmg *= 1.4; e.weakT = 2; e.weak = 0.7; }
     }
     dmg = Math.max(0, dmg);
+    if (e.barrier && e.barrier > 0 && dmg > 0) { const a = Math.min(e.barrier, dmg); e.barrier -= a; dmg -= a; e.barrierAt = this.time + 5; if (e.barrier <= 0) { this.fx.ring(e.x, e.y, e.r * 1.8, '#7dd3fc'); this.fx.burst(e.x, e.y, '#7dd3fc', 14, { speed: 160, life: 0.5 }); } }
     e.hp -= dmg; e.hitFlash = 0.08;
     if (info.knock && !e.boss && e.mass < 30) { const [kx, ky] = U.norm(info.kx == null ? e.x - p.x : info.kx, info.ky == null ? e.y - p.y : info.ky); const f = (info.knock * 180 * (1 + p.stats.knockback)) / Math.max(0.5, e.mass); e.vx += kx * f; e.vy += ky * f; }
     if (w) { const key = w.id || 'x'; this.dmgByWeapon[key] = (this.dmgByWeapon[key] || 0) + dmg; if (w.dmgDealt != null) w.dmgDealt += dmg; }
@@ -590,6 +711,14 @@ export class Game {
     if (p.f.u_frost && rand() < 0.05) this.applyStatus(e, 'freeze', { dur: 1 });
     info.dmg = dmg; info.crit = crit;
     if (h && h.onHit && !info.execute && !(w && w.noMark)) h.onHit(this, p, e, info);
+    // elements & run synergies (only real weapon hits: not burns, reactions or other derived damage)
+    if (tags && !e.dead && e.hp > 0) {
+      if (st.shock && f.res_storm && (st.arcAt ?? 0) <= this.time) { st.arcAt = this.time + 1; const o = this.nearestEnemy(e.x, e.y, 170, (x) => x !== e); if (o) { this.fx.beam(e.x, e.y, o.x, o.y, '#fde047', 2, 0.15); this.damageEnemy(o, dmg * 0.4, { weapon: { id: 'resonance' }, knock: 0.2 }); this.applyStatus(o, 'shock', { dur: 3 }); } }
+      if (tags.includes('lightning')) this.applyStatus(e, 'shock', { dur: 3 });
+      if (crit && f.res_steel) this.applyStatus(e, 'bleed', { dur: 3, dps: dmg * 0.25 });
+      if (f.b_prism && rand() < 0.06) { const r = rand(); if (r < 0.34) this.applyStatus(e, 'burn', { dur: 3, dps: dmg * 0.3 }); else if (r < 0.67) this.applyStatus(e, 'chill', { dur: 2, power: 0.3 }); else this.applyStatus(e, 'shock', { dur: 3 }); }
+      if (crit && f.b_volatile && rand() < 0.25) { const x = e.x, y = e.y, d = dmg * 0.35; this.after(0.05, () => this.explode(x, y, 45, d, { id: 'boon' }, { color: '#ffb347', small: true, quiet: true, knock: 0.4 })); }
+    }
     if (e.hp <= 0) this.killEnemy(e, info);
     return dmg;
   }
@@ -609,6 +738,35 @@ export class Game {
     }
     else if (type === 'freeze') { if (e.boss) { this.applyStatus(e, 'chill', { dur, power: 0.6 }); return; } const d = dur * (o.noMul ? 1 : (this.player.freezeMul || 1)); if (!st.freeze) this.fx.burst(e.x, e.y, '#bae6fd', 6, { speed: 50, life: 0.4 }); st.freeze = Math.max(st.freeze || 0, d); }
     else if (type === 'stun') { if (e.boss) return; st.stun = Math.max(st.stun || 0, dur); }
+    else if (type === 'shock') st.shock = Math.max(st.shock || 0, dur || 3);
+    if (type === 'burn' || type === 'chill' || type === 'freeze' || type === 'shock') this.checkReaction(e, type);
+  }
+  /** Two elements on one enemy react: thermal shock (burn+chill), overload (burn+shock), superconduct (chill+shock). */
+  private checkReaction(e: Enemy, added: StatusSpec['type']): void {
+    const st = e.st;
+    if (e.dead || (st.reactAt ?? 0) > this.time) return;
+    const cold = !!(st.chill || st.freeze), hot = !!st.burn, shock = !!st.shock;
+    const id: ReactionId | null = added === 'burn' ? (cold ? 'thermal' : shock ? 'overload' : null) : added === 'shock' ? (hot ? 'overload' : cold ? 'superconduct' : null) : hot ? 'thermal' : shock ? 'superconduct' : null;
+    if (!id) return;
+    const p = this.player, f = p.f, def = REACTION_DEFS[id];
+    st.reactAt = this.time + REACTION_CD * (f.b_mastery ? 0.5 : 1);
+    const R = (10 + p.level * 2.2) * p.stats.might * (1 + p.stats.reactDmg), src = { id: 'reaction' };
+    this.reactions++;
+    this.fx.callout(e.x, e.y - e.r - 14, def.name, def.color);
+    if (id === 'thermal') {
+      delete st.chill; delete st.freeze;
+      this.fx.burst(e.x, e.y, '#e0f2fe', 14, { speed: 160, life: 0.45 }); this.fx.ring(e.x, e.y, e.r * 2.4, '#bae6fd', { thin: true });
+      this.damageEnemy(e, R * 2 + (e.boss ? 0 : e.maxHp * 0.12), { weapon: src, knock: 0.6 });
+    } else if (id === 'overload') {
+      delete st.shock;
+      this.explode(e.x, e.y, 80, R * 1.4, src, { color: '#fb923c', knock: 1.2, quiet: true });
+    } else {
+      delete st.shock; st.brittle = 4;
+      this.fx.burst(e.x, e.y, '#a5f3fc', 10, { speed: 120, life: 0.4 });
+      this.damageEnemy(e, R * 0.6, { weapon: src, knock: 0.2 });
+    }
+    this.sfx('react');
+    if (!this.reacted.has(id)) { this.reacted.add(id); this.events.emit('discover', 'reaction', id); this.story('reaction', id); }
   }
   killEnemy(e: Enemy, info: DamageInfo): void {
     if (e.dead) return;
@@ -618,12 +776,21 @@ export class Game {
     this.enemyKills[e.type] = (this.enemyKills[e.type] || 0) + 1;
     this.fx.death(e);
     this.sfx('kill');
+    this.addCombo();
     // drops
     this.dropLoot(e);
     if (e.def.split && !e.noSplit) { for (let i = 0; i < e.def.split.n; i++) { const a = rand() * TAU; const c = this.spawnEnemy(e.def.split.type, e.x + Math.cos(a) * 14, e.y + Math.sin(a) * 14, { tier: e.tier }); c.vx = Math.cos(a) * 160; c.vy = Math.sin(a) * 160; } }
-    if (e.def.explode && !info.thorns) { const r = e.def.explode.r; if (U.dist(e.x, e.y, p.x, p.y) < r + p.r) this.hitPlayer(e.dmg * 1.2, e); this.fx.explosion(e.x, e.y, r, '#f97316'); }
+    if (e.def.explode && !info.thorns && !info.noBlast) { const r = e.def.explode.r; if (U.dist(e.x, e.y, p.x, p.y) < r + p.r) this.hitPlayer(e.dmg * 1.2, e); this.fx.explosion(e.x, e.y, r, '#f97316'); }
     if (e.boss) this.onBossKilled(e);
-    if (e.elite) { this.elites++; }
+    if (e.elite) { this.elites++; this.fx.timeWarp(0.35, 0.25); this.fx.zoomPunch(0.04); if (e.affixes && e.affixes.includes('brood')) for (let i = 0; i < 4; i++) { const a = (i / 4) * TAU; this.spawnEnemy(e.type, e.x + Math.cos(a) * 20, e.y + Math.sin(a) * 20, { tier: e.tier, hpMul: 2.5 }).vx = Math.cos(a) * 200; } }
+    if ((e.elite || e.boss) && p.f.b_overcharge) { p.activeCharges = p.activeMax; p.activeCdT = 0; }
+    const f = p.f;
+    const sh = e.st.shatter as { dmg: number; w: DamageSource | null | undefined } | undefined;
+    if (sh && e.st.freeze) { const x = e.x, y = e.y; this.after(0.05, () => this.explode(x, y, 70, sh.dmg, sh.w, { color: '#e0f2fe', small: true, quiet: true, knock: 0.4 })); this.fx.burst(x, y, '#e0f2fe', 12, { speed: 170, life: 0.45 }); }
+    if (f.res_fire && e.st.burn) { const x = e.x, y = e.y, d = e.st.burn.dps * 1.5 + 8 * p.stats.might; this.after(0.05, () => this.explode(x, y, 60, d, { id: 'resonance' }, { color: '#ff7a3c', small: true, quiet: true, knock: 0.5 })); }
+    if (f.b_chain && !e.boss && rand() < 0.12) { const x = e.x, y = e.y, d = Math.min(e.maxHp * 0.3, (20 + p.level * 4) * p.stats.might); this.after(0.08, () => this.explode(x, y, 70, d, { id: 'boon' }, { color: '#fb923c', small: true, quiet: true })); }
+    if (f.res_umbra && rand() < 0.04 && this.alliesOf('wraith').length < 8) this.spawnAlly({ kind: 'wraith', x: e.x, y: e.y, color: '#c084fc', life: 8, speed: 240, dmg: () => (14 + p.level * 1.6) * p.stats.might * (1 + p.stats.minionDmg), weapon: { id: 'resonance' } });
+    if (f.b_harvest && this.kills % 150 === 0 && this.harvestMight < 0.4) this.harvestMight = Math.min(0.4, this.harvestMight + 0.01);
     const h = p.char.hooks; if (h && h.onKill) h.onKill(this, p, e);
     if (p.f.u_soulreaver) this.runMight = Math.min(0.4, this.runMight + 0.0003);
     if (p.f.u_bloodstone) this.heal(0.5, true, true);
@@ -639,7 +806,7 @@ export class Game {
     if (!e.boss && !e.elite && rand() < 0.004 * (p.f.moreFood ? 2 : 1) * p.stats.luck) this.spawnPickup({ kind: 'food', x: e.x, y: e.y });
     if (e.elite) {
       this.spawnPickup({ kind: 'chest', x: e.x, y: e.y });
-      const n = U.randi(2, 4) + Math.floor(p.stats.matFind * 3);
+      const n = (U.randi(2, 4) + Math.floor(p.stats.matFind * 3) + (e.affixes ? e.affixes.length : 0)) * (p.f.b_hunter ? 2 : 1);
       for (let i = 0; i < n; i++) this.spawnPickup({ kind: 'mat', mat: rand() < 0.2 * this.stage.tier ? 'dust' : 'iron', x: e.x + U.rand(-24, 24), y: e.y + U.rand(-24, 24) });
       if (rand() < 0.35) this.spawnPickup({ kind: 'ember', x: e.x + U.rand(-20, 20), y: e.y + U.rand(-20, 20), value: 1 });
     }
@@ -654,10 +821,12 @@ export class Game {
   }
   private onBossKilled(e: Enemy): void {
     this.bossKills++; const id = e.bossId ?? e.type; this.bossKillsBy[id] = (this.bossKillsBy[id] || 0) + 1;
-    if (this.boss === e) this.boss = null;
-    if (this.player.f.u_banner) this.runMight += 0.08;
-    this.fx.flash('#fff', 0.6); this.fx.shake(18); this.sfx('boss');
+    // another boss may still be alive (late-game tiers overlap): keep its health bar up
+    if (this.boss === e) this.boss = this.enemies.find((o) => o.boss && !o.dead) ?? null;
+    if (this.player.f.u_banner) { this.bannerMight += 0.08; this.recalc(); }
+    this.fx.flash('#fff', 0.6); this.fx.shake(18); this.sfx('boss'); this.fx.timeWarp(0.2, 1.4); this.fx.zoomPunch(0.12);
     this.notice(e.def.name + ' has fallen!', '#fde68a', 4);
+    this.story('bossDown', id);
   }
 
   /* ==================== ENEMIES ==================== */
@@ -672,10 +841,25 @@ export class Game {
       rush: o.rush || null, life: o.life || 0, atkT: U.rand(0.5, 2), chargeState: null, healT: 2, weakT: 0, weak: 1, spawnT: 0.4, flip: 1, bossTier: 0, attackIdx: 0, attack: null, mvx: 0, mvy: 0,
     };
     e.maxHp = e.hp = def.hp * d.hp * tierMul * (0.85 + curse * 0.15) * (o.hpMul || 1);
-    if (e.elite) { e.maxHp = e.hp = e.maxHp * 9; e.r = def.r * 1.45; e.dmg *= 1.5; e.xp *= 12; e.mass *= 3; e.speed *= 0.92; }
+    if (e.elite) { e.maxHp = e.hp = e.maxHp * 9; e.r = def.r * 1.45; e.dmg *= 1.5; e.xp *= 12; e.mass *= 3; e.speed *= 0.92; this.rollAffixes(e); }
     this.enemies.push(e);
     return e;
   }
+  /** Elites roll affixes (more as the night deepens) that change how they fight. */
+  private rollAffixes(e: Enemy): void {
+    const m = this.diff.minute, n = m < 10 ? 1 : m < 22 ? 2 : 3;
+    const pool = ELITE_AFFIXES.filter((a) => a.minute <= m && !(a.id === 'brood' && e.def.split));
+    const out: string[] = [];
+    while (out.length < n && pool.length) { const a = pool.splice(Math.floor(rand() * pool.length), 1)[0]!; out.push(a.id); }
+    e.affixes = out; e.affT = U.rand(1, 3);
+    for (const id of out) {
+      if (id === 'swift') e.speed *= 1.45;
+      else if (id === 'colossal') { e.r *= 1.3; e.maxHp = e.hp = e.maxHp * 1.6; e.mass = 40; e.dmg *= 1.2; }
+      else if (id === 'warded') { e.barrierMax = e.barrier = e.maxHp * 0.35; e.barrierAt = 0; }
+    }
+  }
+  /** Display name of an enemy with its affixes, e.g. "Molten Swift Grave Brute". */
+  enemyName(e: Enemy): string { return (e.affixes || []).map((a) => AFFIX_BY_ID[a]!.name).join(' ') + (e.affixes && e.affixes.length ? ' ' : '') + e.def.name; }
   spawnBoss(bossId: string, tierUp = 0): Enemy {
     const def = BOSSES[bossId]!, d = this.diff;
     const a = rand() * TAU, p = this.player;
@@ -683,12 +867,13 @@ export class Game {
     const x = p.x + Math.cos(a) * dist, y = p.y + Math.sin(a) * dist;
     const e: Enemy = {
       id: U.uid(), type: bossId, bossId, def, x, y, px: x, py: y, hp: 0, maxHp: 0, rush: null, life: 0, chargeState: null, mvx: 0, mvy: 0, r: def.r, speed: def.speed * (1 + tierUp * 0.05), dmg: def.dmg * d.dmg, xp: def.xp * d.xp, mass: def.mass,
-      vx: 0, vy: 0, st: {}, hitFlash: 0, icd: {}, elite: false, boss: true, tier: 3, dead: false, contactCd: 0, anim: 0, wave: 0, atkT: 3, attackIdx: 0, attack: null, bossTier: tierUp, spawnT: 1.2, flip: 1, weakT: 0, weak: 1, healT: 0,
+      vx: 0, vy: 0, st: {}, hitFlash: 0, icd: {}, elite: false, boss: true, tier: 3, dead: false, contactCd: 0, anim: 0, wave: 0, atkT: 3, attackIdx: 0, attack: null, bossTier: tierUp, spawnT: 1.2, flip: 1, weakT: 0, weak: 1, healT: 0, phase: 1,
     };
     e.maxHp = e.hp = def.hp * Math.max(1, d.hp * 0.55) * (1 + tierUp * 0.6) * this.mods.bossHp * (0.85 + p.stats.curse * 0.15);
     this.enemies.push(e); this.boss = e;
-    this.notice(def.name + ' approaches!', '#f87171', 4); this.sfx('boss'); this.fx.shake(12);
+    this.sfx('boss'); this.fx.shake(12); this.fx.zoomPunch(-0.08);
     this.events.emit('discover', 'boss', bossId);
+    this.story('bossIntro', bossId);
     return e;
   }
   spawnPos(pad = 80): [number, number] {
@@ -704,7 +889,7 @@ export class Game {
     // spawn table
     for (const row of SPAWN_TABLE) if (m >= row.at) this.spawnTable = row;
     const count = this.enemies.length;
-    const want = d.count * (0.85 + p.stats.curse * 0.15);
+    const want = d.count * (0.85 + p.stats.curse * 0.15) * (this.trial ? 1.8 : 1);
     if (count < want) {
       this.spawnAcc += dt * Math.min(4 + m * 0.6, 2 + (want - count) * 0.12);
       while (this.spawnAcc >= 1 && this.enemies.length < want + 10) {
@@ -722,7 +907,8 @@ export class Game {
       const keys = Object.keys(this.spawnTable.types).filter((k) => !ENEMIES[k].noSpawn);
       const [x, y] = this.spawnPos(40);
       const e = this.spawnEnemy(U.pick(keys), x, y, { elite: true });
-      this.notice('An elite ' + e.def.name + ' hunts you', '#c084fc', 3);
+      this.notice(this.enemyName(e) + ' hunts you', '#c084fc', 3);
+      this.story('elite', e.type);
     }
     // scripted events
     while (this.eventIdx < EVENTS.length && this.time >= EVENTS[this.eventIdx].at) { this.runEvent(EVENTS[this.eventIdx]); this.eventIdx++; }
@@ -738,6 +924,15 @@ export class Game {
     }
     // braziers & food
     this.brazierT -= dt; if (this.brazierT <= 0) { this.brazierT = 40; const [x, y] = this.spawnPos(-40); this.spawnPickup({ kind: 'brazier', x, y, hp: 3 }); }
+    // shrines: a couple of bargains somewhere out in the dark
+    this.shrineT -= dt;
+    if (this.shrineT <= 0) {
+      this.shrineT = U.rand(55, 80);
+      if (this.shrines.filter((s) => !s.used).length < 2) {
+        const a = rand() * TAU, dd = U.rand(620, 900), kind = U.weightedPick(SHRINE_KINDS, (k) => SHRINE_DEFS[k].weight);
+        this.shrines.push({ id: U.uid(), kind, x: p.x + Math.cos(a) * dd, y: p.y + Math.sin(a) * dd, r: SHRINE_RADIUS, charge: 0, used: false, age: 0, usedAt: 0, dead: false });
+      }
+    }
     // recycle far enemies
     const maxD2 = Math.pow(Math.hypot(this.viewW, this.viewH) * 1.9, 2);
     for (const e of this.enemies) { if (e.boss || e.rush || e.dead) continue; if (U.dist2(e.x, e.y, p.x, p.y) > maxD2) { const [x, y] = this.spawnPos(); e.x = x; e.y = y; } }
@@ -773,9 +968,13 @@ export class Game {
       if (st.chill) { st.chill.t -= dt; spdMul *= 1 - st.chill.p; if (st.chill.t <= 0) delete st.chill; }
       if (st.freeze) { st.freeze -= dt; frozen = true; if (st.freeze <= 0) delete st.freeze; }
       if (st.stun) { st.stun -= dt; frozen = true; if (st.stun <= 0) delete st.stun; }
+      if (st.shock) { st.shock -= dt; if (st.shock <= 0) delete st.shock; }
+      if (st.brittle) { st.brittle -= dt; if (st.brittle <= 0) delete st.brittle; }
       // movement
       const dx = px - e.x, dy = py - e.y, dist = Math.hypot(dx, dy) || 1;
       const nx = dx / dist, ny = dy / dist;
+      if (p.f.b_dilation && dist < 170 && !e.boss) spdMul *= 0.65;
+      if (e.affixes && !frozen && e.spawnT <= 0) spdMul *= this.updateAffixes(e, dt, dist);
       let mvx = 0, mvy = 0;
       if (!frozen) {
         if (e.boss) { this.bossAI(e, dt, nx, ny, dist); mvx = e.mvx || 0; mvy = e.mvy || 0; }
@@ -801,10 +1000,15 @@ export class Game {
             if (def.move === 'wave') { const s = Math.sin(e.anim * 0.7 + e.wave) * 0.8; mvx += -ny * s; mvy += nx * s; }
             else if (def.move === 'flutter') { const s = Math.sin(e.anim * 1.3 + e.wave) * 0.6; mvx += -ny * s; mvy += nx * s; }
             if (def.charge) { e.atkT -= dt; if (e.atkT <= 0 && dist < 320 && dist > 60) { e.chargeState = { phase: 'windup', t: def.charge.windup }; this.fx.telegraphLine(e, px, py, def.charge.windup); } }
-            const heal = def.heal; if (heal) { e.healT -= dt; if (e.healT <= 0) { e.healT = heal.cd; let n = 0; this.eachEnemyIn(e.x, e.y, heal.r, (o) => { if (o !== e && o.hp < o.maxHp) { o.hp = Math.min(o.maxHp, o.hp + o.maxHp * heal.pct); n++; } }); if (n) this.fx.ring(e.x, e.y, heal.r, '#a3e635', { thin: true }); } }
+            const heal = def.heal; if (heal) { e.healT -= dt; if (e.healT <= 0) { e.healT = heal.cd; let n = 0; this.eachEnemyIn(e.x, e.y, heal.r, (o) => { if (o !== e && !o.boss && o.hp < o.maxHp) { o.hp = Math.min(o.maxHp, o.hp + o.maxHp * heal.pct); n++; } }); if (n) this.fx.ring(e.x, e.y, heal.r, '#a3e635', { thin: true }); } }
           }
         }
         if (e.chargeState && e.chargeState.phase === 'windup') { mvx = 0; mvy = 0; }
+        // bomber: arm when close, hold still while the fuse burns (a fair chance to step out of the blast)
+        if (e.def.explode && e.spawnT <= 0) {
+          if (e.fuse == null) { if (dist < e.r + p.r + 26) e.fuse = BOMBER_FUSE; }
+          else { e.fuse -= dt; mvx = 0; mvy = 0; if (Math.floor(e.fuse * 12) % 2 === 0) e.hitFlash = 0.04; }
+        }
       }
       const spd = e.speed * spdMul * (e.spawnT > 0 ? 0.5 : 1);
       e.x += mvx * spd * dt + e.vx * dt; e.y += mvy * spd * dt + e.vy * dt;
@@ -813,10 +1017,15 @@ export class Game {
       // contact damage
       if (e.contactCd <= 0 && !frozen) {
         const rr = e.r + p.r;
-        if (dx * dx + dy * dy < rr * rr) { e.contactCd = e.boss ? 0.7 : 0.55; this.hitPlayer(e.dmg * (e.chargeState && e.chargeState.phase === 'go' ? 1.6 : 1) * (e.weakT > 0 ? e.weak : 1), e); }
+        if (dx * dx + dy * dy < rr * rr) {
+          e.contactCd = e.boss ? 0.7 : 0.55;
+          const hp0 = p.hp, frenzy = e.affixes && e.affixes.includes('frenzied') && e.hp < e.maxHp * 0.5 ? 1.3 : 1;
+          this.hitPlayer(e.dmg * frenzy * (e.chargeState && e.chargeState.phase === 'go' ? 1.6 : 1) * (e.weakT > 0 ? e.weak : 1), e);
+          if (p.hp < hp0 && e.affixes && e.affixes.includes('vampiric')) { e.hp = Math.min(e.maxHp, e.hp + e.maxHp * 0.12); this.fx.burst(e.x, e.y, '#f87171', 8, { speed: 60, life: 0.5, up: true }); }
+        }
       }
-      // bomber
-      if (e.def.explode && dist < e.r + p.r + 26 && e.spawnT <= 0) { this.damageEnemy(e, e.hp + 1, { quiet: true, weapon: null }); }
+      // self-destruct: not a hit by the player (no lifesteal, crits or on-hit effects)
+      if (e.fuse != null && e.fuse <= 0) { e.hp = 0; this.killEnemy(e, { weapon: null }); }
     }
     compact(this.enemies);
     // separation
@@ -835,6 +1044,27 @@ export class Game {
       }
     }
   }
+  /** Per-step elite affix behaviour. Returns a speed multiplier. */
+  private updateAffixes(e: Enemy, dt: number, dist: number): number {
+    const p = this.player; let spd = 1;
+    e.affT = (e.affT ?? 2) - dt;
+    const ready = e.affT <= 0;
+    for (const id of e.affixes!) {
+      if (id === 'frenzied' && e.hp < e.maxHp * 0.5) spd *= 1.5;
+      else if (id === 'vampiric') e.hp = Math.min(e.maxHp, e.hp + e.maxHp * 0.01 * dt);
+      else if (id === 'warded' && e.barrierMax && (e.barrier ?? 0) < e.barrierMax && (e.barrierAt ?? 0) <= this.time) e.barrier = Math.min(e.barrierMax, (e.barrier ?? 0) + e.barrierMax * 0.5 * dt);
+      else if (id === 'molten' && this.frame % 24 === 0) this.spawnHazard({ x: e.x, y: e.y, r: 30 + e.r * 0.4, dmg: e.dmg * 0.3, life: 3.5, color: '#fb923c', status: 'burn', arm: 0.5 });
+      else if (ready && id === 'arcane') { for (let k = 0; k < 8; k++) this.spawnEnemyProj(e.x, e.y, (k / 8) * TAU + e.anim, 170, e.dmg * 0.5, '#c084fc'); }
+      else if (ready && id === 'necrotic' && dist < 700) { for (let k = 0; k < 3; k++) { const a = rand() * TAU; this.spawnEnemy(rand() < 0.5 ? 'skeleton' : 'ghoul', e.x + Math.cos(a) * (e.r + 24), e.y + Math.sin(a) * (e.r + 24)); } this.fx.ring(e.x, e.y, e.r + 30, '#86efac', { thin: true }); }
+      else if (ready && id === 'phasing' && dist > 140 && dist < 900) {
+        const a = rand() * TAU, tx = p.x + Math.cos(a) * 110, ty = p.y + Math.sin(a) * 110;
+        this.fx.telegraphCircle(tx, ty, e.r + 8, 0.7, '#e879f9');
+        this.after(0.7, () => { if (e.dead) return; this.fx.burst(e.x, e.y, '#e879f9', 14, { speed: 140, life: 0.4 }); e.x = e.px = tx; e.y = e.py = ty; this.fx.burst(tx, ty, '#e879f9', 14, { speed: 140, life: 0.4 }); });
+      }
+    }
+    if (ready) e.affT = 3.5 + rand() * 1.5;
+    return spd;
+  }
   spawnEnemyProj(x: number, y: number, angle: number, speed: number, dmg: number, color?: string): void { this.eprojs.push({ x, y, px: x, py: y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, r: 6, dmg, life: 4, color: color || '#f87171', dead: false }); }
   private bossAI(e: Enemy, dt: number, nx: number, ny: number, _dist: number): void {
     const p = this.player, def = e.def;
@@ -849,13 +1079,16 @@ export class Game {
       else if (a.type === 'pull') { const dx = e.x - p.x, dy = e.y - p.y, d = Math.hypot(dx, dy) || 1; if (d > 80) { p.x += dx / d * 190 * dt; p.y += dy / d * 190 * dt; } if (a.t <= 0) e.attack = null; }
       else if (a.type === 'summon') { if (a.t <= 0) { const type = def.summon || 'skeleton'; for (let k = 0; k < 6 + e.bossTier * 2; k++) { const an = k / 6 * TAU; this.spawnEnemy(type, e.x + Math.cos(an) * (e.r + 30), e.y + Math.sin(an) * (e.r + 30)); } this.fx.ring(e.x, e.y, e.r + 40, def.col.eye); e.attack = null; } }
       else if (a.type === 'ring') { if (a.t <= 0) { const n = 16 + e.bossTier * 4; for (let k = 0; k < n; k++) this.spawnEnemyProj(e.x, e.y, (k / n) * TAU + a.off, 210, e.dmg * 0.6, def.col.eye); e.attack = null; } }
+      else if (a.type === 'cross') { a.tick -= dt; if (a.tick <= 0) { a.tick = 0.11; a.ang += 0.14 * (a.n || 1); for (let k = 0; k < 4; k++) this.spawnEnemyProj(e.x, e.y, a.ang + k * Math.PI / 2, 200, e.dmg * 0.5, def.col.eye); } if (a.t <= 0) e.attack = null; }
+      else if (a.t <= 0) e.attack = null; // barrage / hazard resolve through timers
       return;
     }
+    if (e.phase !== 2 && e.hp < e.maxHp * 0.5) { this.enrage(e); return; }
     e.mvx = nx; e.mvy = ny;
-    e.atkT -= dt * this.mods.bossRate;
+    e.atkT -= dt * this.mods.bossRate * (e.phase === 2 ? 1.35 : 1);
     if (e.atkT <= 0) {
       e.atkT = 3.4 - Math.min(1.4, e.bossTier * 0.3);
-      const attacks = def.attacks!, type = attacks[e.attackIdx % attacks.length]; e.attackIdx++;
+      const attacks = e.phase === 2 ? def.attacks!.concat(def.phase2 || []) : def.attacks!, type = attacks[e.attackIdx % attacks.length]!; e.attackIdx++;
       if (type === 'charge') { e.attack = { type, phase: 'windup', t: 0.8 }; this.fx.telegraphLine(e, p.x, p.y, 0.8); }
       else if (type === 'dash') e.attack = { type, t: 0.45, n: 3, dx: nx, dy: ny };
       else if (type === 'spiral') e.attack = { type, t: 2.6, tick: 0, ang: rand() * TAU };
@@ -864,7 +1097,42 @@ export class Game {
       else if (type === 'pull') { e.attack = { type, t: 1.6 }; this.fx.ring(e.x, e.y, 400, def.col.eye, { thin: true }); }
       else if (type === 'summon') e.attack = { type, t: 0.7 };
       else if (type === 'ring') e.attack = { type, t: 0.6, off: rand() };
+      else if (type === 'cross') e.attack = { type, t: 2.6, tick: 0, ang: rand() * TAU, n: e.attackIdx % 2 ? 1 : -1 };
+      else if (type === 'barrage') { e.attack = { type, t: 1.4 }; this.barrage(e); }
+      else if (type === 'hazard') { e.attack = { type, t: 0.6 }; this.hazardPools(e); }
     }
+  }
+  /** Half health: the boss enrages — faster, harder, and its second-phase attacks join the rotation. */
+  private enrage(e: Enemy): void {
+    e.phase = 2; e.speed *= 1.15; e.attack = null; e.atkT = 0.8;
+    this.fx.flash(e.def.col.eye, 0.45); this.fx.shake(14); this.fx.ring(e.x, e.y, e.r * 3, e.def.col.eye); this.fx.timeWarp(0.25, 0.7); this.fx.zoomPunch(0.06);
+    this.eachEnemyIn(e.x, e.y, 260, (o) => { if (o !== e && !o.boss) { const [kx, ky] = U.norm(o.x - e.x, o.y - e.y); o.vx += kx * 500; o.vy += ky * 500; } });
+    this.notice(e.def.name + ' is enraged!', e.def.col.eye, 3); this.sfx('boss');
+    this.story('bossPhase', e.bossId ?? e.type);
+  }
+  /** Telegraphed impacts raining around the player, detonating one after another. */
+  private barrage(e: Enemy): void {
+    const p = this.player, n = 5 + e.bossTier * 2 + (e.phase === 2 ? 2 : 0), col = e.def.col.eye, R = 70;
+    for (let i = 0; i < n; i++) {
+      const a = rand() * TAU, d = i === 0 ? 0 : 60 + rand() * 180;
+      const x = p.x + Math.cos(a) * d + p.move.x * 90 * (i ? 0 : 1), y = p.y + Math.sin(a) * d + p.move.y * 90 * (i ? 0 : 1), t = 1 + i * 0.16;
+      this.fx.telegraphCircle(x, y, R, t, col);
+      this.after(t, () => { const q = this.player; if (U.dist(q.x, q.y, x, y) < R + q.r) this.hitPlayer(e.dmg * 1.1, e); this.fx.explosion(x, y, R, col); this.fx.shake(4); this.sfx('explode'); });
+    }
+  }
+  /** Lingering pools that hurt (and may slow or burn) the player. */
+  private hazardPools(e: Enemy): void {
+    const p = this.player, hz = e.def.hazard || { color: e.def.col.eye };
+    for (let i = 0; i < 6; i++) {
+      const a = rand() * TAU, d = i < 2 ? rand() * 90 : 100 + rand() * 220, near = i < 2;
+      const x = (near ? p.x : e.x) + Math.cos(a) * d, y = (near ? p.y : e.y) + Math.sin(a) * d;
+      this.spawnHazard({ x, y, r: 64, dmg: e.dmg * 0.35, life: 7, color: hz.color, status: hz.status });
+    }
+  }
+  spawnHazard(o: { x: number; y: number; r: number; dmg: number; life: number; color: string; status?: StatusSpec['type']; arm?: number }): Hazard {
+    const h: Hazard = { x: o.x, y: o.y, r: o.r, dmg: o.dmg, life: o.life, max: o.life, arm: o.arm ?? 0.8, color: o.color, status: o.status, tickT: 0, dead: false };
+    if (this.hazards.length < 120) this.hazards.push(h);
+    return h;
   }
 
   /* ==================== PROJECTILES ==================== */
@@ -1065,9 +1333,9 @@ export class Game {
     const p = this.player, value = k.value ?? 0;
     if (k.kind === 'gem') { this.gainXp(value); this.sfx('gem', Math.min(24, Math.floor((this.gemCombo = (this.gemCombo || 0) + 1) / 4))); this.gemComboT = 0.5; }
     else if (k.kind === 'gold') { const v = Math.round(value * p.stats.greed); this.gold += v; this.sfx('gold'); this.fx.text(p.x, p.y - 26, '+' + v + ' gold', '#f5c542'); if (p.f.u_goldheal) this.heal(1, true, true); }
-    else if (k.kind === 'food') { this.heal(p.stats.maxHp * (p.f.moreFood ? 0.4 : 0.28)); }
+    else if (k.kind === 'food') { this.heal(p.stats.maxHp * (p.f.moreFood ? 0.42 : 0.28)); }
     else if (k.kind === 'magnet') { for (const o of this.pickups) if (o.kind === 'gem' || o.kind === 'gold' || o.kind === 'mat' || o.kind === 'ember') o.pull = true; this.fx.ring(p.x, p.y, 600, '#4fd1ff'); this.sfx('pickup'); }
-    else if (k.kind === 'bomb') { const list = this.enemiesInRadius(p.x, p.y, 900); list.forEach((e) => this.damageEnemy(e, e.boss ? e.maxHp * 0.1 : e.hp + 1, { quiet: true, weapon: null })); this.fx.flash('#fff', 0.8); this.fx.shake(14); this.sfx('explode'); }
+    else if (k.kind === 'bomb') { const list = this.enemiesInRadius(p.x, p.y, 900); list.forEach((e) => this.damageEnemy(e, e.boss ? e.maxHp * 0.1 : e.hp + 1, { quiet: true, weapon: null, noBlast: true })); this.fx.flash('#fff', 0.8); this.fx.shake(14); this.sfx('explode'); }
     else if (k.kind === 'clock') { for (const e of this.enemies) this.applyStatus(e, e.boss ? 'chill' : 'freeze', { dur: 5, power: 0.7, noMul: true }); this.fx.flash('#b28dff', 0.5); this.sfx('freeze'); }
     else if (k.kind === 'chest') { this.chestQueue.push({ boss: false }); }
     else if (k.kind === 'bosschest') { this.chestQueue.push({ boss: true }); }
@@ -1080,10 +1348,98 @@ export class Game {
   }
   gainLevel(silent?: boolean): void { const p = this.player; p.level++; p.xpNext = xpForLevel(p.level); this.levelQueue++; if (!silent) { this.fx.ring(p.x, p.y, 60, '#fde68a'); } }
 
+  /* ==================== HAZARDS & SHRINES ==================== */
+  private updateHazards(dt: number): void {
+    const p = this.player;
+    for (const h of this.hazards) {
+      if (h.dead) continue;
+      h.life -= dt; h.tickT -= dt;
+      if (h.life <= 0) { h.dead = true; continue; }
+      if (h.max - h.life < h.arm || h.tickT > 0) continue;
+      const rr = h.r + p.r * 0.5;
+      if (U.dist2(h.x, h.y, p.x, p.y) < rr * rr) { h.tickT = 0.5; this.hitPlayer(h.dmg, { def: { name: 'scorched ground' }, color: h.color }); if (h.status === 'chill') p.slowT = Math.max(p.slowT, 1); }
+    }
+    compact(this.hazards);
+  }
+  private updateShrines(dt: number): void {
+    const p = this.player;
+    for (const s of this.shrines) {
+      s.age += dt;
+      if (s.used) { if (this.time - s.usedAt > 3) s.dead = true; continue; }
+      const d2 = U.dist2(s.x, s.y, p.x, p.y);
+      if (d2 > 2600 * 2600) { s.dead = true; continue; }
+      const inside = d2 < (s.r + p.r) * (s.r + p.r);
+      s.charge = inside ? s.charge + dt / SHRINE_CHANNEL : Math.max(0, s.charge - dt * 0.8);
+      if (s.charge >= 1) { s.charge = 1; s.used = true; s.usedAt = this.time; this.activateShrine(s); }
+    }
+    compact(this.shrines);
+    if (this.trial) {
+      const t = this.trial; t.t -= dt;
+      if (t.t <= 0) {
+        this.trial = null;
+        this.spawnPickup({ kind: 'chest', x: p.x + 40, y: p.y });
+        for (let i = 0; i < 3; i++) this.spawnPickup({ kind: 'ember', x: p.x + U.rand(-50, 50), y: p.y + U.rand(-50, 50), value: 1 });
+        for (let i = 0; i < 2; i++) this.spawnPickup({ kind: 'mat', mat: 'dust', x: p.x + U.rand(-50, 50), y: p.y + U.rand(-50, 50) });
+        this.notice('The Soul Well is sated. Claim your reward.', '#c084fc', 3); this.sfx('chest'); this.fx.ring(p.x, p.y, 300, '#c084fc');
+      }
+    }
+  }
+  private activateShrine(s: Shrine): void {
+    const p = this.player, def = SHRINE_DEFS[s.kind];
+    this.shrinesUsed++;
+    this.fx.ring(s.x, s.y, 160, def.color); this.fx.burst(s.x, s.y, def.color, 30, { speed: 200, life: 0.8, up: true }); this.fx.flash(def.color, 0.25); this.sfx('shrine');
+    let msg = def.name;
+    if (s.kind === 'blood') {
+      p.hp = Math.max(1, p.hp * 0.75); p.hurtFlash = 0.2;
+      const ws = p.weapons.filter((w) => w.level < w.def.max), ps = p.passives.filter((x) => x.level < x.def.max);
+      if (ws.length) { const w = U.pick(ws); w.level++; msg = def.name + ': ' + w.def.name + ' → Lv ' + w.level; }
+      else if (ps.length) { const x = U.pick(ps); x.level++; msg = def.name + ': ' + x.def.name + ' → Lv ' + x.level; }
+      else { this.chestQueue.push({ boss: false }); }
+      this.recalc();
+    } else if (s.kind === 'fortune') {
+      this.spawnPickup({ kind: 'chest', x: s.x, y: s.y });
+      for (let i = 0; i < 12; i++) this.spawnPickup({ kind: 'gold', x: s.x + U.rand(-70, 70), y: s.y + U.rand(-70, 70), value: Math.round(U.randi(4, 10) * this.diff.gold) });
+    } else if (s.kind === 'trial') {
+      this.trial = { t: TRIAL_TIME, x: s.x, y: s.y };
+      const keys = Object.keys(this.spawnTable.types).filter((k) => !ENEMIES[k]!.noSpawn);
+      this.runEvent({ type: 'ring', enemy: U.pick(keys), n: 24 + Math.floor(this.diff.minute) });
+      msg = def.name + ' — survive ' + TRIAL_TIME + 's';
+    } else if (s.kind === 'haste') {
+      this.addBuff('haste', 30, { speed: 0.25, cooldown: 0.2 });
+    } else if (s.kind === 'life') {
+      this.heal(p.stats.maxHp * 0.5); this.addShield(p.stats.maxHp * 0.3);
+    } else if (s.kind === 'curse') {
+      this.curseBonus += 0.2; this.gainLevel(); this.recalc();
+    }
+    this.notice(msg, def.color, 3);
+    this.story('shrine', s.kind);
+  }
+  addBuff(id: string, t: number, stats: StatBag): void {
+    const b = this.buffs.find((x) => x.id === id);
+    if (b) { b.t = b.max = t; b.stats = stats; } else this.buffs.push({ id, t, max: t, stats });
+    this.recalc();
+  }
+
+  /* ==================== KILL STREAK ==================== */
+  private addCombo(): void {
+    const f = this.player.f;
+    this.combo++; this.comboT = COMBO_WINDOW + (f.b_frenzy ? 1.5 : 0);
+    if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+    const t = comboTier(this.combo);
+    if (t !== this.comboTier) {
+      const up = t > this.comboTier; this.comboTier = t; this.recalc();
+      if (up) { this.sfx('combo', t); const ct = COMBO_TIERS[t - 1]!; if (t >= 3 && !this.storyOnce.has('combo' + t)) { this.storyOnce.add('combo' + t); this.story('combo', ct.name); } }
+    }
+  }
+
   /* ==================== META EFFECTS (uniques, sigils) ==================== */
   private updateMetaEffects(dt: number): void {
     const p = this.player, f = p.f;
     this.gemComboT = (this.gemComboT || 0) - dt; if (this.gemComboT <= 0) this.gemCombo = 0;
+    if (this.combo > 0) { this.comboT -= dt; if (this.comboT <= 0) { this.combo = 0; if (this.comboTier) { this.comboTier = 0; this.recalc(); } } }
+    if (this.buffs.length) { let changed = false; for (const b of this.buffs) { b.t -= dt; if (b.t <= 0) changed = true; } if (changed) { this.buffs = this.buffs.filter((b) => b.t > 0); this.recalc(); } }
+    if (f.b_eye) { this.eyeT -= dt; if (this.eyeT <= 0) { this.eyeT = 6; let best: Enemy | null = null; this.eachEnemyIn(p.x, p.y, 620, (e) => { if (!best || e.hp > best.hp) best = e; }); const t = best as Enemy | null; if (t) { const a = Math.atan2(t.y - p.y, t.x - p.x), len = U.dist(p.x, p.y, t.x, t.y) + 60; this.lineDamage(p.x, p.y, a, len, 30, (60 + p.level * 9) * p.stats.might + t.maxHp * (t.boss ? 0.02 : 0.08), { id: 'boon' }, { color: '#c084fc', knock: 0.5 }); this.fx.beam(p.x, p.y - 20, t.x, t.y, '#e879f9', 6, 0.3); this.sfx('zap'); } } }
+    if (f.b_storm) { this.stormT -= dt; if (this.stormT <= 0) { this.stormT = 3; WH.targets(this, p, 3, 380).forEach((e) => this.lightning(e.x, e.y, 40, (24 + p.level * 2.5) * p.stats.might, { id: 'boon' }, { status: { type: 'shock', dur: 3 } })); } }
     if (f.u_storm) { this.uStormT = (this.uStormT || 4) - dt; if (this.uStormT <= 0) { this.uStormT = 4; WH.targets(this, p, 3, 300).forEach((e) => { this.fx.beam(p.x, p.y - 20, e.x, e.y, '#fde047', 2, 0.15); this.damageEnemy(e, (20 + p.level * 2) * p.stats.might, { weapon: { id: 'unique' }, knock: 0.3 }); }); } }
     if (f.u_aegis) { this.uAegisT = (this.uAegisT || 20) - dt; if (this.uAegisT <= 0) { this.uAegisT = 20; this.addShield(p.stats.maxHp * 0.12); } }
     if (f.u_starfall) { this.uStarT = (this.uStarT || 8) - dt; if (this.uStarT <= 0) { this.uStarT = 8; const e = this.randomEnemyNear(p.x, p.y, 420); if (e) { const x = e.x, y = e.y; this.meteor(x, y, 0.7, () => this.explode(x, y, 80, (60 + p.level * 6) * p.stats.might, { id: 'unique' }, { color: '#fde68a' })); } } }
@@ -1130,6 +1486,7 @@ export class Game {
       const w = ev[0]!, evo = w.def.evo!; w.evolved = true; this.evolves++;
       rewards.push({ type: 'evolve', def: w.def, name: evo.name, icon: evo.icon, desc: evo.desc });
       this.fx.flash('#fff', 0.9); this.sfx('evolve');
+      this.story('evolve', w.id);
     } else {
       let n = 1;
       const r = rand(), luck = p.stats.chestLuck + (p.stats.luck - 1) * 0.5;
@@ -1147,7 +1504,30 @@ export class Game {
     const matN = (c.boss ? 3 : 1) + Math.floor(p.stats.matFind * 2);
     for (let i = 0; i < matN; i++) { const m: MaterialId = c.boss ? U.pick(['dust', 'crystal', 'dust'] as const) : (rand() < 0.25 ? 'dust' : 'iron'); this.mats[m]++; rewards.push({ type: 'mat', mat: m }); }
     this.recalc();
+    if (c.boss) this.boonQueue++;
     this.events.emit('chest', rewards, c.boss);
+  }
+
+  /* ==================== BOONS ==================== */
+  /** Three boons the player doesn't own yet (deterministic). */
+  boonOptions(): BoonDef[] {
+    const own = this.player.boons as string[];
+    const pool = BOONS.filter((b) => !own.includes(b.id)), out: BoonDef[] = [];
+    while (out.length < 3 && pool.length) out.push(pool.splice(Math.floor(rand() * pool.length), 1)[0]!);
+    return out;
+  }
+  pickBoon(b: BoonDef | null): void {
+    const p = this.player;
+    if (b) {
+      (p.boons as string[]).push(b.id);
+      if (b.flag) p.f[b.flag] = true;
+      if (b.onPick) b.onPick(this, p);
+      this.recalc();
+      this.fx.flash('#e9d5ff', 0.4); this.sfx('evolve');
+      this.events.emit('discover', 'boon', b.id);
+      this.story('boon', b.id);
+    }
+    if (this.state === 'boon') this.state = 'play';
   }
   closeChest(): void { if (this.state === 'chest') this.state = 'play'; }
 
@@ -1163,10 +1543,12 @@ export class Game {
       charId: p.char.id, stageId: stage.id, seed: this.seed, time: this.time, kills: this.kills, level: p.level, bossKills: this.bossKills, elites: this.elites, evolves: this.evolves, heat: this.heat,
       gold, embers, charXp, mats, enemyKills: this.enemyKills, bossKillsBy: this.bossKillsBy, dmgByWeapon: this.dmgByWeapon,
       weapons: p.weapons.map((w) => ({ id: w.id, level: w.level, evolved: w.evolved, dmg: w.dmgDealt })), passives: p.passives.map((x) => ({ id: x.id, level: x.level })), eclipse: this.eclipse,
+      killedBy: this.lastHitBy, bestCombo: this.bestCombo, reactions: this.reactions, boons: (p.boons as string[]).slice(), shrines: this.shrinesUsed,
     };
   }
   quit(): void { this.state = 'over'; }
   notice(text: string, color?: string, dur?: number): void { this.events.emit('notice', text, color, dur); }
   sfx(n: string, p?: number): void { this.events.emit('sfx', n, p); }
+  story(beat: StoryBeatId, ref?: string): void { this.events.emit('story', beat, ref); }
 }
 

@@ -1,10 +1,11 @@
 /**
  * Canvas2D implementation of {@link Backend} — the fallback when WebGL2 is unavailable
  * (very old browsers, blocklisted GPUs, `?renderer=canvas`). Same visuals, lower throughput.
+ * Post-processing is reduced to its one cheap part: the tint wash, as a single full-screen fill.
  */
 import { U } from '../../core/util';
 import { Sprites } from '../sprites';
-import { parseColor, type Backend, type BlendMode, type ImageOpts, type Img, type RenderStats } from './backend';
+import { parseColor, type Backend, type BlendMode, type ImageOpts, type Img, type PostFX, type RenderStats } from './backend';
 
 const TAU = Math.PI * 2;
 
@@ -25,6 +26,7 @@ export class Canvas2DBackend implements Backend {
   private inLights = false;
   private lightScale = 0.25;
   private patterns = new WeakMap<HTMLCanvasElement, CanvasPattern>();
+  private post: PostFX | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.ctx = canvas.getContext('2d', { alpha: false })!;
@@ -38,6 +40,7 @@ export class Canvas2DBackend implements Backend {
 
   begin(clear: string): void {
     this.stats.instances = 0;
+    this.post = null;
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalCompositeOperation = 'source-over';
@@ -46,7 +49,20 @@ export class Canvas2DBackend implements Backend {
     ctx.fillRect(0, 0, this.width, this.height);
   }
   end(): void {
+    const p = this.post;
+    if (p && p.tintA > 0) {
+      const ctx = this.ctx;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = css(p.tint, Math.min(1, p.tintA));
+      ctx.fillRect(0, 0, this.width, this.height);
+      this.stats.instances++;
+    }
     this.stats.drawCalls = this.stats.instances;
+  }
+  setPost(p: PostFX | null): void {
+    this.post = p;
   }
 
   setView(a: number, b: number, c: number, d: number, e: number, f: number): void {
@@ -62,10 +78,12 @@ export class Canvas2DBackend implements Backend {
     if (alpha <= 0) return;
     this.stats.instances++;
     const ctx = this.ctx;
+    const res = img.res ?? 1;
     let sx = o.sx ?? 1,
       sy = o.sy ?? sx;
-    if (o.w != null) sx *= o.w / img.width;
-    if (o.h != null) sy *= o.h / img.height;
+    // explicit w/h are view-space sizes and win; otherwise the canvas holds `res` pixels per unit
+    sx *= o.w != null ? o.w / img.width : 1 / res;
+    sy *= o.h != null ? o.h / img.height : 1 / res;
     const ox = o.ox ?? img.ox ?? img.width / 2,
       oy = o.oy ?? img.oy ?? img.height / 2;
     let src: HTMLCanvasElement = img;

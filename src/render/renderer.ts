@@ -6,11 +6,13 @@
  * is smooth at any display refresh rate. Nothing here mutates gameplay state.
  */
 import { U } from '../core/util';
+import { AFFIX_BY_ID } from '../data/enemies';
 import { MAT_BY_ID, STAGES } from '../data/passives';
+import { SHRINE_DEFS, TRIAL_TIME } from '../data/shrines';
 import type { Game } from '../game/game';
 import type { Enemy, StageDef } from '../game/types';
 import type { FX } from './fx';
-import type { Backend, Img } from './gfx/backend';
+import type { Backend, Img, PostFX } from './gfx/backend';
 import { Canvas2DBackend } from './gfx/canvas2d';
 import { WebGL2Backend } from './gfx/webgl2';
 import { Sprites as S } from './sprites';
@@ -18,6 +20,23 @@ import { Sprites as S } from './sprites';
 const TAU = Math.PI * 2;
 const MAX_LIGHTS = 360;
 const GEM_COLOR = { blue: '#60a5fa', green: '#4ade80', red: '#f87171', purple: '#c084fc' } as const;
+
+/** Per-stage weather: ambient motes' drift velocity (px/s), size, lifetime and how many spawn per frame. */
+interface Weather {
+  vx: [number, number];
+  vy: [number, number];
+  size: [number, number];
+  life: number;
+  rate: number;
+  color?: string;
+}
+const WEATHER: Record<string, Weather> = {
+  ashen: { vx: [-8, 8], vy: [-22, -8], size: [1.5, 3], life: 3, rate: 0.5 },
+  frost: { vx: [18, 40], vy: [40, 70], size: [1.5, 3.2], life: 4, rate: 1.4, color: '#e8f6ff' },
+  cathedral: { vx: [-10, 10], vy: [10, 26], size: [1.8, 3], life: 4, rate: 0.7 },
+  blight: { vx: [-6, 6], vy: [-14, -4], size: [2, 4], life: 4.5, rate: 0.6 },
+  void: { vx: [-24, 24], vy: [-24, 24], size: [1.5, 3.5], life: 3, rate: 0.9 },
+};
 
 export type BackendPreference = 'auto' | 'webgl2' | 'canvas2d';
 
@@ -44,6 +63,20 @@ export class Renderer {
   readonly backend: Backend;
   readonly fx: FX;
   quality = 1;
+  /** Bloom & colour grading (WebGL2 only; Settings → Post-processing). */
+  postEnabled = true;
+  private post: PostFX = {
+    bloom: 0.8,
+    threshold: 0.6,
+    aberration: 0,
+    saturation: 1.08,
+    contrast: 1.06,
+    exposure: 1,
+    tint: '#000',
+    tintA: 0,
+    grain: 0.035,
+    time: 0,
+  };
   W = 1;
   H = 1;
   dpr = 1;
@@ -60,6 +93,18 @@ export class Renderer {
   private spike: Img | null = null;
   private hawk: Img | null = null;
   private arrow: Img | null = null;
+  private camSnap = false;
+  /** Camera look-ahead offset (leads the player's movement). */
+  private lead = { x: 0, y: 0 };
+  /** Recent dash positions for afterimages: x, y, age triples. */
+  private trail: number[] = [];
+  private trailT = 0;
+  private dustT = 0;
+  private lastLevel = 0;
+  private pillarT = 0;
+  private labels = new WeakMap<Enemy, string>();
+  /** World-space name tags, drawn after lighting so they stay readable in the dark. */
+  private tags: { text: string; x: number; y: number; color: string; a: number }[] = [];
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -88,6 +133,11 @@ export class Renderer {
     // Field of view depends on CSS size only, so every device sees the same amount of world.
     this.zoom = U.clamp(Math.min(cw / 1500, ch / 850) * 1.05, 0.5, 1.8) * this.dpr;
     this.backend.resize(this.W, this.H);
+  }
+
+  /** Jump the camera to the player on the next frame instead of easing there (new run). */
+  snapCamera(): void {
+    this.camSnap = true;
   }
 
   setStage(stage: StageDef): void {
@@ -124,11 +174,19 @@ export class Renderer {
     const p = g.player;
     const ppx = p.px + (p.x - p.px) * a,
       ppy = p.py + (p.y - p.py) * a;
-    const k = 1 - Math.exp(-10 * frameDt);
-    this.cam.x += (ppx - this.cam.x) * k;
-    this.cam.y += (ppy - this.cam.y) * k;
-    g.viewW = this.W / this.zoom / 2;
-    g.viewH = this.H / this.zoom / 2;
+    // lead the camera a little in the direction of travel, so you see more of what you walk into
+    const lk = 1 - Math.exp(-3 * this.dt);
+    this.lead.x += (p.move.x * 70 - this.lead.x) * lk;
+    this.lead.y += (p.move.y * 50 - this.lead.y) * lk;
+    const k = this.camSnap ? 1 : 1 - Math.exp(-10 * frameDt);
+    if (this.camSnap) this.lead.x = this.lead.y = 0;
+    this.camSnap = false;
+    this.cam.x += (ppx + this.lead.x - this.cam.x) * k;
+    this.cam.y += (ppy + this.lead.y - this.cam.y) * k;
+    const baseZoom = this.zoom;
+    this.zoom = baseZoom * (1 + this.fx.zoom);
+    g.viewW = this.W / baseZoom / 2;
+    g.viewH = this.H / baseZoom / 2;
     let sx = 0,
       sy = 0;
     if (this.fx.shakeAmt > 0) {
@@ -150,9 +208,12 @@ export class Renderer {
       x1 = this.cam.x + vw,
       y1 = this.cam.y + vh;
     this.drawGround(x0, y0, x1, y1);
+    this.drawDecals(x0, y0, x1, y1);
     this.drawProps(x0, y0, x1, y1);
+    this.drawShrines(g, x0, y0, x1, y1);
     this.drawFog(g, x0, y0, x1, y1);
     this.drawZones(g);
+    this.drawHazards(g);
     this.drawMines(g);
     this.drawTelegraphs();
     this.drawCorpses();
@@ -171,7 +232,9 @@ export class Renderer {
     B.setView(1, 0, 0, 1, 0, 0);
     this.drawPost(g);
     this.drawIndicators(g, a);
+    B.setPost(this.postEnabled ? this.grade(g) : null);
     B.end();
+    this.zoom = baseZoom;
   }
 
   /* ------------------------------ world layers ------------------------------ */
@@ -220,16 +283,86 @@ export class Renderer {
       const fy = ((U.hash2(i, 2, 7) * 1.7 + Math.sin(t * 0.1 + i) * 0.05) % 1.7) - 0.35;
       this.backend.glow(x0 + fx * w, y0 + fy * h, 180 + U.hash2(i, 3, 7) * 200, pal.fog, 0.16);
     }
-    if (this.dt > 0 && Math.random() < 0.5)
-      this.fx.ambient(
-        x0 + Math.random() * w,
-        y0 + Math.random() * h,
-        U.lerp(-8, 8, Math.random()),
-        U.lerp(-22, -8, Math.random()),
-        3,
-        U.lerp(1.5, 3, Math.random()),
-        pal.ember,
-      );
+    const wx = WEATHER[pal.id] ?? WEATHER.ashen!;
+    if (this.dt > 0) {
+      let n = wx.rate * this.dt * 60;
+      while (n > 0) {
+        if (Math.random() < n)
+          this.fx.ambient(
+            x0 + Math.random() * w,
+            y0 + Math.random() * h,
+            U.lerp(wx.vx[0], wx.vx[1], Math.random()),
+            U.lerp(wx.vy[0], wx.vy[1], Math.random()),
+            wx.life,
+            U.lerp(wx.size[0], wx.size[1], Math.random()),
+            wx.color ?? pal.ember,
+          );
+        n -= 1;
+      }
+    }
+  }
+
+  /** Scorch marks and splats: soft ground stains under everything else. */
+  private drawDecals(x0: number, y0: number, x1: number, y1: number): void {
+    const B = this.backend;
+    for (const d of this.fx.decals) {
+      if (d.x < x0 - d.r || d.x > x1 + d.r || d.y < y0 - d.r || d.y > y1 + d.r) continue;
+      const k = Math.min(1, d.life / (d.max * 0.4));
+      if (d.kind === 'scorch') {
+        B.radial(d.x, d.y, d.r, '#000', 0.5 * k, '#120a06', 0.35 * k, 0.6);
+        B.ring(d.x, d.y, d.r * 0.7, d.r * 0.55, d.rot, d.r * 0.25, d.color, 0.1 * k, 2);
+      } else {
+        B.ellipse(d.x, d.y, d.r, d.r * 0.55, d.rot, '#000', 0.28 * k);
+        B.ellipse(d.x + Math.cos(d.rot) * d.r * 0.3, d.y, d.r * 0.55, d.r * 0.35, d.rot + 1, d.color, 0.25 * k);
+      }
+    }
+  }
+
+  private drawShrines(g: Game, x0: number, y0: number, x1: number, y1: number): void {
+    const B = this.backend,
+      t = g.time;
+    for (const s of g.shrines) {
+      if (s.x < x0 - 80 || s.x > x1 + 80 || s.y < y0 - 140 || s.y > y1 + 80) continue;
+      const def = SHRINE_DEFS[s.kind],
+        fade = s.used ? Math.max(0, 1 - (t - s.usedAt) / 3) : Math.min(1, s.age * 2),
+        pulse = 0.75 + Math.sin(t * 3 + s.id) * 0.25;
+      B.ellipse(s.x, s.y + 4, 44, 14, 0, '#000', 0.45 * fade);
+      B.radial(s.x, s.y, s.r * 1.4, def.color, 0.18 * pulse * fade, def.color, 0.08 * fade, 0.6);
+      B.ring(s.x, s.y, s.r, s.r * 0.42, 0, 2, def.color, 0.55 * pulse * fade);
+      if (s.charge > 0 && !s.used)
+        B.arc(s.x, s.y - 2, s.r * 0.75, -Math.PI / 2 + s.charge * Math.PI, s.charge * Math.PI, 5, def.color, 0.95);
+      B.image(S.shrine(s.kind, def.color), s.x, s.y + 4, { alpha: s.used ? fade * 0.5 : fade });
+      if (!s.used && this.dt > 0 && Math.random() < 0.25)
+        this.fx.ambient(s.x + U.lerp(-14, 14, Math.random()), s.y - 40, U.lerp(-6, 6, Math.random()), -26, 1.4, 2.5, def.color);
+      this.light(s.x, s.y - 30, 150, 0.7 * fade);
+    }
+    if (g.trial) {
+      const tr = g.trial,
+        k = tr.t / TRIAL_TIME;
+      B.ring(tr.x, tr.y, 220, 220, 0, 3, '#c084fc', 0.35);
+      B.arc(tr.x, tr.y, 228, -Math.PI / 2 + k * Math.PI, k * Math.PI, 6, '#e9d5ff', 0.8);
+    }
+  }
+
+  private drawHazards(g: Game): void {
+    const B = this.backend,
+      t = g.time;
+    for (const h of g.hazards) {
+      const age = h.max - h.life,
+        armed = age >= h.arm,
+        k = Math.min(1, age / Math.max(0.01, h.arm), h.life * 1.5);
+      const wob = 1 + Math.sin(t * 5 + h.x) * 0.04;
+      B.radial(h.x, h.y, h.r * wob, h.color, (armed ? 0.5 : 0.18) * k, h.color, (armed ? 0.25 : 0.1) * k, 0.65);
+      B.ring(h.x, h.y, h.r * wob, h.r * wob, 0, armed ? 2 : 1.5, h.color, (armed ? 0.7 : 0.4 + Math.sin(t * 20) * 0.2) * k);
+      if (armed && this.dt > 0 && Math.random() < 0.15)
+        this.fx.burst(h.x + U.lerp(-h.r, h.r, Math.random()) * 0.7, h.y + U.lerp(-h.r, h.r, Math.random()) * 0.5, h.color, 1, {
+          speed: 20,
+          life: 0.6,
+          up: true,
+          size: 3,
+        });
+      if (armed) this.light(h.x, h.y, h.r * 1.6, 0.35);
+    }
   }
 
   private drawZones(g: Game): void {
@@ -360,16 +493,60 @@ export class Renderer {
       const bobY = frozen ? 0 : Math.abs(Math.sin(e.anim)) * (e.boss ? 3 : 2);
       const sq = frozen ? 0 : Math.sin(e.anim * 2) * 0.05;
       const fade = e.spawnT > 0 ? Math.max(0.2, 1 - e.spawnT * 2) : 1;
+      // summoned out of the ground: a rune circle opens and the body rises out of it
+      const rise = e.spawnT > 0 ? Math.min(1, Math.max(0, 1 - e.spawnT / (e.boss ? 1.2 : 0.4))) : 1;
+      if (rise < 1) {
+        const rr = e.r * (1.1 + (1 - rise) * 0.5);
+        B.ellipse(ex, ey + e.r * 0.6, rr, rr * 0.38, 0, '#000', 0.55 * (1 - rise * 0.6));
+        B.ring(ex, ey + e.r * 0.6, rr, rr * 0.38, 0, 1.5, e.def.col.eye, 0.8 * (1 - rise));
+      }
+      const aff = e.affixes;
+      if (aff && aff.length) {
+        const ac = AFFIX_BY_ID[aff[0]!]!.color;
+        B.radial(ex, ey + e.r * 0.5, e.r * 1.9, ac, 0.3, ac, 0.12, 0.5);
+        for (let i = 0; i < aff.length; i++) {
+          const c2 = AFFIX_BY_ID[aff[i]!]!.color,
+            an = t * (1.5 + i * 0.4) + i * 2.1;
+          B.arc(ex, ey, e.r * 1.35 + i * 4, an, 0.7, 2, c2, 0.85);
+        }
+        if (e.barrier && e.barrierMax) B.ring(ex, ey, e.r * 1.25, e.r * 1.25, 0, 3, '#7dd3fc', 0.25 + 0.6 * (e.barrier / e.barrierMax));
+      }
+      if (e.boss && e.phase === 2) {
+        const pulse = 0.6 + Math.sin(t * 8) * 0.25;
+        B.radial(ex, ey, e.r * 2.6, e.def.col.eye, 0.35 * pulse, '#7f1d1d', 0.2 * pulse, 0.5);
+      }
       if (e.elite || e.boss) B.glow(ex, ey - bobY, e.r * 2, e.def.col.eye, 0.6 * fade);
       let tc: string | undefined,
         ta = 1;
       if (e.hitFlash <= 0) {
         if (frozen) tc = 'rgba(160,220,255,0.55)';
+        else if (e.st.brittle) tc = Math.sin(t * 12) > 0 ? 'rgba(190,240,255,0.5)' : 'rgba(140,210,255,0.3)';
+        else if (aff && e.hp < e.maxHp * 0.5 && aff.includes('frenzied'))
+          tc = Math.sin(t * 16) > 0 ? 'rgba(255,40,40,0.45)' : 'rgba(255,40,40,0.2)';
         else if (e.st.chill) tc = 'rgba(120,180,255,0.3)';
         else if (e.st.burn) tc = Math.sin(t * 20) > 0 ? 'rgba(255,120,40,0.3)' : 'rgba(255,120,40,0.15)';
         else if (tint) tc = tint;
       } else ta = 0;
-      B.image(sp, ex, ey - bobY, { sx: e.flip * (1 + sq), sy: 1 - sq, alpha: fade, flash: e.hitFlash > 0 ? 1 : 0, tint: tc, tintA: ta });
+      B.image(sp, ex, ey - bobY + (1 - rise) * e.r * 0.8, {
+        sx: e.flip * (1 + sq) * (0.6 + rise * 0.4),
+        sy: (1 - sq) * rise,
+        alpha: fade,
+        flash: e.hitFlash > 0 ? (e.boss || e.elite ? 0.55 : 0.8) : 0,
+        tint: tc,
+        tintA: ta,
+      });
+      if (e.st.shock && (Math.floor(t * 12 + e.id) & 3) === 0) {
+        const an = (U.hash2(e.id, Math.floor(t * 12), 3) - 0.5) * TAU;
+        B.line(
+          ex + Math.cos(an) * e.r * 0.3,
+          ey + Math.sin(an) * e.r * 0.3,
+          ex + Math.cos(an) * e.r * 1.2,
+          ey + Math.sin(an) * e.r * 1.2 - 4,
+          1.5,
+          '#fde047',
+          0.9,
+        );
+      }
       if (e.st.stun)
         for (let i = 0; i < 3; i++) {
           const an = t * 6 + i * 2.1;
@@ -388,6 +565,12 @@ export class Renderer {
         const w = e.r * 2.4;
         B.rect(ex - w / 2, ey - e.r - 12, w, 4, '#000', 0.6);
         B.rect(ex - w / 2, ey - e.r - 12, w * Math.max(0, e.hp / e.maxHp), 4, e.boss ? '#f87171' : '#c084fc', 1);
+        if (e.barrier && e.barrierMax) B.rect(ex - w / 2, ey - e.r - 15, w * (e.barrier / e.barrierMax), 2, '#7dd3fc', 1);
+      }
+      if (e.elite && aff) {
+        let label = this.labels.get(e);
+        if (!label) this.labels.set(e, (label = g.enemyName(e)));
+        this.tags.push({ text: label, x: ex, y: ey - e.r - 24, color: AFFIX_BY_ID[aff[0]!]!.color, a: fade });
       }
       if (e.elite) this.light(ex, ey, 110, 0.5);
       else if (e.boss) this.light(ex, ey, 200, 0.8);
@@ -443,7 +626,7 @@ export class Renderer {
         B.line(x - 11, y - 4, x + 11, y - 4, 2, '#99a', fade);
         B.circle(x, y, 3, c, fade);
       } else if (al.kind === 'clone') {
-        B.image(S.character(g.player.char, 72) as Img, x, y, { ox: 36, oy: 62, sx: flip, alpha: fade * 0.6, tint: c, tintA: 0.7 });
+        B.image(S.hero(g.player.char), x, y, { sx: flip, alpha: fade * 0.6, tint: c, tintA: 0.7 });
       }
       this.light(x, y, 70, 0.4);
     }
@@ -468,11 +651,54 @@ export class Renderer {
     const alpha = p.invulnT > 0.15 ? 0.5 + Math.sin(t * 30) * 0.3 : 1;
     const s = 1.15,
       sxs = moving ? 1 + Math.sin(p.walkT * 2) * 0.03 : 1;
-    B.image(S.character(p.char, 72) as Img, x, y - bob, {
-      ox: 36,
-      oy: 62,
+    const step = moving ? (Math.floor(p.walkT / Math.PI) % 2 ? 1 : 2) : 0;
+    const lean = p.dashT > 0 ? p.dashDx * 0.25 : p.move.x * 0.09;
+    // dash afterimages
+    if (this.dt > 0) {
+      this.trailT -= this.dt;
+      if (p.dashT > 0 && this.trailT <= 0) {
+        this.trailT = 0.03;
+        this.trail.push(x, y - bob, 0);
+      }
+      for (let i = 2; i < this.trail.length; i += 3) this.trail[i]! += this.dt;
+      while (this.trail.length && this.trail[2]! > 0.3) this.trail.splice(0, 3);
+      // footstep dust
+      this.dustT -= this.dt;
+      if (moving && p.dashT <= 0 && this.dustT <= 0) {
+        this.dustT = 0.16;
+        this.fx.burst(x - p.move.x * 8, y + 22, '#9a8f8a', 2, { speed: 24, life: 0.45, size: 3, add: false, up: true });
+      }
+    }
+    const hero = S.hero(p.char, step);
+    for (let i = 0; i < this.trail.length; i += 3) {
+      const k = 1 - this.trail[i + 2]! / 0.3;
+      B.image(hero, this.trail[i]!, this.trail[i + 1]!, {
+        sx: flip * s,
+        sy: s,
+        rot: lean,
+        alpha: k * 0.45,
+        tint: p.char.colors.accent,
+        tintA: 0.85,
+      });
+    }
+    // level-up: a pillar of light
+    if (p.level !== this.lastLevel) {
+      if (this.lastLevel && p.level > this.lastLevel) this.pillarT = 0.7;
+      this.lastLevel = p.level;
+    }
+    if (this.pillarT > 0) {
+      this.pillarT -= this.dt;
+      const k = Math.max(0, this.pillarT / 0.7);
+      B.setBlend('add');
+      B.line(x, y + 20, x, y - 420, 46 * k + 6, '#fde68a', 0.35 * k, 1.5, '#fde68a', 0);
+      B.line(x, y + 20, x, y - 300, 10 * k + 2, '#fff', 0.7 * k, 0, '#fff', 0);
+      B.setBlend('normal');
+      this.light(x, y, 300, k);
+    }
+    B.image(hero, x, y - bob, {
       sx: flip * s * sxs,
       sy: s,
+      rot: lean,
       alpha,
       flash: p.hurtFlash > 0 ? 1 : 0,
     });
@@ -719,10 +945,15 @@ export class Renderer {
   }
 
   private drawTexts(): void {
+    for (const t of this.tags) this.backend.text(t.text, t.x, t.y, 12, t.color, t.a, true);
+    this.tags.length = 0;
     for (const t of this.fx.texts) {
       const k = Math.min(1, (t.life / t.max) * 2);
-      const size = t.crit ? 22 : t.dmg ? 14 : t.small ? 14 : 16;
-      this.backend.text(t.text, t.x, t.y, size, t.color, k, !!t.crit);
+      // numbers pop in oversized and settle (crits and callouts pop harder)
+      const age = t.max - t.life,
+        pop = 1 + (t.big ? 0.8 : t.crit ? 0.6 : 0.3) * Math.max(0, 1 - age / 0.14);
+      const size = (t.big ? 18 : t.crit ? 22 : t.dmg ? 14 : t.small ? 14 : 16) * pop;
+      this.backend.text(t.text, t.x, t.y, size, t.color, k, !!t.crit || !!t.big);
     }
   }
 
@@ -754,8 +985,34 @@ export class Renderer {
       const a = ((0.35 - hpk) / 0.35) * (0.35 + Math.sin(g.time * 6) * 0.15);
       B.radial(W / 2, H / 2, R, '#b40000', 0, '#b40000', a, 0.999, (Math.min(W, H) * 0.3) / R);
     }
+    // where the last hit came from: a red crescent on that edge of the screen
+    if (this.fx.hurtA > 0) {
+      const ha = this.fx.hurtA,
+        R2 = Math.min(W, H) * 0.46;
+      if (this.fx.hurtAng == null) B.ring(W / 2, H / 2, R2, R2, 0, 40 * this.dpr, '#dc2626', ha * 0.25, 2);
+      else B.arc(W / 2, H / 2, R2, this.fx.hurtAng, 0.55, 26 * this.dpr, '#ef4444', ha * 0.55);
+    }
     if (g.eclipse) B.rect(0, 0, W, H, 'rgb(80,0,120)', 0.07);
     if (this.fx.flashA > 0) B.rect(0, 0, W, H, this.fx.flashCol, this.fx.flashA * 0.7);
+  }
+
+  /** Per-frame grading: hit aberration, low-health red wash, eclipse purple, a little grain. */
+  private grade(g: Game): PostFX {
+    const P = this.post,
+      p = g.player,
+      hpk = p.hp / p.stats.maxHp;
+    P.time = g.time;
+    P.aberration = (this.fx.hurtA * 4 + (g.boss && g.boss.phase === 2 ? 1.2 : 0)) * this.dpr;
+    P.bloom = this.quality < 0.7 ? 0.55 : 0.8;
+    if (hpk < 0.3) {
+      P.tint = '#7f0000';
+      P.tintA = (0.3 - hpk) * 0.7;
+    } else if (g.eclipse) {
+      P.tint = '#3b0764';
+      P.tintA = 0.12;
+    } else P.tintA = 0;
+    P.saturation = hpk < 0.3 ? 0.85 : 1.08;
+    return P;
   }
 
   private arrowSprite(): Img {
@@ -799,6 +1056,12 @@ export class Renderer {
       if (sx > 0 && sx < W && sy > 0 && sy < H) continue;
       this.indicator(sx, sy, '#ffd700');
     }
+    for (const s of g.shrines) {
+      if (s.used) continue;
+      const [sx, sy] = this.worldToScreen(s.x, s.y);
+      if (sx > 0 && sx < W && sy > 0 && sy < H) continue;
+      this.indicator(sx, sy, SHRINE_DEFS[s.kind].color);
+    }
   }
 
   /* -------------------------------- title menu -------------------------------- */
@@ -834,6 +1097,15 @@ export class Renderer {
     B.setView(1, 0, 0, 1, 0, 0);
     const R = Math.hypot(W, H) / 2 + 2;
     B.radial(W / 2, H / 2, R, '#000', 0.25, '#000', 0.85, 0.999, (Math.min(W, H) * 0.2) / R);
+    if (this.postEnabled) {
+      const P = this.post;
+      P.time = this.menuT;
+      P.aberration = 0;
+      P.tintA = 0;
+      P.saturation = 1.08;
+      P.bloom = 1;
+    }
+    B.setPost(this.postEnabled ? this.post : null);
     B.end();
   }
 }

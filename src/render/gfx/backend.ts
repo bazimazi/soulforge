@@ -8,8 +8,12 @@
  * so hot paths never build colour strings.
  */
 
-/** A drawable bitmap; procedural sprites carry their origin (pivot) in `ox`/`oy` pixels. */
-export type Img = HTMLCanvasElement & { ox?: number; oy?: number };
+/**
+ * A drawable bitmap; procedural sprites carry their origin (pivot) in `ox`/`oy` canvas pixels.
+ * `res` is the bitmap's pixel density — canvas pixels per view-space unit (default 1). A sprite baked
+ * at `res: 2` is supersampled: a 128 px canvas draws 64 units wide, so it stays crisp when zoomed.
+ */
+export type Img = HTMLCanvasElement & { ox?: number; oy?: number; res?: number };
 
 export type BlendMode = 'normal' | 'add';
 
@@ -19,10 +23,10 @@ export interface ImageOpts {
   sy?: number;
   rot?: number;
   alpha?: number;
-  /** Pivot in image pixels; defaults to the sprite's `ox/oy`, else its centre. */
+  /** Pivot in canvas pixels (independent of `res`); defaults to the sprite's `ox/oy`, else its centre. */
   ox?: number;
   oy?: number;
-  /** Draw at an explicit size (pixels in view space) instead of the bitmap size. */
+  /** Draw at an explicit view-space size instead of the bitmap size (canvas size / `res`); wins over `res`. */
   w?: number;
   h?: number;
   /** Colour overlay painted over the sprite's opaque pixels (like `source-atop`). */
@@ -37,6 +41,32 @@ export interface RenderStats {
   instances: number;
 }
 
+/**
+ * Full-screen post-processing applied at `end()` (WebGL2 only; Canvas2D only approximates the tint wash).
+ * A value at identity — bloom 0, aberration 0, saturation/contrast/exposure 1, tintA 0, grain 0 — costs
+ * nothing: the frame renders straight to the screen exactly as with `setPost(null)`.
+ */
+export interface PostFX {
+  /** Bloom intensity, 0 = off (typical 0.5–1.2). */
+  bloom: number;
+  /** Luminance threshold 0..1 above which pixels bloom (use a soft knee). */
+  threshold: number;
+  /** Chromatic aberration in device pixels at the screen edge (hit feedback pulses), 0 = off. */
+  aberration: number;
+  /** Colour grading: 1 = unchanged. */
+  saturation: number;
+  contrast: number;
+  /** Overall exposure multiplier, 1 = unchanged. */
+  exposure: number;
+  /** Colour wash mixed over the final image: CSS colour + amount 0..1 (eclipse purple, low-HP red, stage mood). */
+  tint: string;
+  tintA: number;
+  /** Film grain amount 0..1 (very subtle, e.g. 0.04). */
+  grain: number;
+  /** Seconds, for animated grain. */
+  time: number;
+}
+
 export interface Backend {
   readonly kind: 'webgl2' | 'canvas2d';
   readonly width: number;
@@ -46,6 +76,12 @@ export interface Backend {
   resize(width: number, height: number): void;
   begin(clear: string): void;
   end(): void;
+  /**
+   * Set post-processing for the frame being recorded; null renders straight to the screen (menus, low quality).
+   * Call between `begin()` and `end()` (begin resets it to null). The object is read at `end()`, so it may be
+   * set after drawing and reused/mutated across frames without allocation.
+   */
+  setPost(p: PostFX | null): void;
 
   setView(a: number, b: number, c: number, d: number, e: number, f: number): void;
   setBlend(mode: BlendMode): void;

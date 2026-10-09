@@ -1120,6 +1120,8 @@ textarea {
 }
 #active button.ab {
   display: block;
+  pointer-events: auto; /* #hud is click-through; the ability button is not */
+  cursor: pointer;
   padding: 0;
   font: inherit;
   color: inherit;
@@ -1171,6 +1173,29 @@ textarea {
   justify-content: center;
   font-weight: 700;
 }
+.hud-pause {
+  pointer-events: auto;
+  cursor: pointer;
+  width: 34px;
+  height: 30px;
+  margin-bottom: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  letter-spacing: -1px;
+}
+.hud-pause:hover {
+  border-color: var(--gold);
+}
+/* keyboard hints are noise on touch screens */
+@media (hover: none) and (pointer: coarse) {
+  #hud .bottom-right,
+  .title-foot .kbd-hint {
+    display: none;
+  }
+}
 #hud .bottom-right {
   position: absolute;
   right: 14px;
@@ -1201,6 +1226,13 @@ textarea {
   gap: 6px;
   pointer-events: none;
   z-index: 5;
+}
+/* outside a run (menus) notices sit at the very top so they don't cover the logo or screen content */
+#hud.hidden ~ #notices {
+  top: 10px;
+}
+#hud.hidden ~ #notices .notice {
+  font-size: 16px;
 }
 .notice {
   font-family: 'Cinzel', serif;
@@ -1491,4 +1523,642 @@ textarea {
   border-radius: 8px;
   z-index: 20;
   animation: fadeIn 0.2s ease;
+}
+
+/* ===================================================================== */
+/* Narrative: narrator subtitles, stage title card, boss banner, prologue */
+/* ===================================================================== */
+#narrator {
+  position: fixed;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  max-width: min(720px, 92vw);
+  padding: 10px 18px 10px 10px;
+  border-radius: 40px 14px 14px 40px;
+  background: linear-gradient(90deg, rgba(10, 8, 16, 0.92), rgba(10, 8, 16, 0.72));
+  border: 1px solid rgba(231, 195, 104, 0.22);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+  animation: narrIn 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+#narrator img {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid rgba(231, 195, 104, 0.45);
+  background: #000;
+  flex: none;
+  object-fit: cover;
+}
+#narrator .who {
+  font-family: 'Cinzel', serif;
+  font-size: 13px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+#narrator .line {
+  font-size: 17px;
+  line-height: 1.3;
+  color: #eee6d6;
+  font-style: italic;
+}
+@keyframes narrIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+#stagecard {
+  position: fixed;
+  top: 26%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  z-index: 6;
+  pointer-events: none;
+  animation: cardTitle 4.2s ease forwards;
+}
+#stagecard h1 {
+  margin: 0;
+  font-size: clamp(34px, 6vw, 64px);
+  font-weight: 700;
+  color: #f5ecd7;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-shadow:
+    0 0 30px rgba(0, 0, 0, 0.9),
+    0 0 60px rgba(231, 195, 104, 0.25);
+}
+#stagecard .line {
+  margin-top: 6px;
+  color: #c9bfae;
+  font-size: 18px;
+  font-style: italic;
+  text-shadow: 0 2px 8px #000;
+}
+#stagecard .rule {
+  height: 1px;
+  width: min(520px, 70vw);
+  margin: 10px auto;
+  background: linear-gradient(90deg, transparent, rgba(231, 195, 104, 0.7), transparent);
+}
+@keyframes cardTitle {
+  0% {
+    opacity: 0;
+    letter-spacing: 0.05em;
+    filter: blur(8px);
+  }
+  18%,
+  75% {
+    opacity: 1;
+    filter: none;
+  }
+  100% {
+    opacity: 0;
+    filter: blur(4px);
+  }
+}
+#bossbanner {
+  --boss: #f87171;
+  position: fixed;
+  top: 30%;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  text-align: center;
+  pointer-events: none;
+  padding: 18px 0;
+  background: linear-gradient(90deg, transparent, rgba(0, 0, 0, 0.75) 25%, rgba(0, 0, 0, 0.75) 75%, transparent);
+  animation: bossIn 3.6s ease forwards;
+}
+#bossbanner .warn {
+  font-size: 13px;
+  letter-spacing: 0.5em;
+  text-transform: uppercase;
+  color: var(--boss);
+}
+#bossbanner h1 {
+  margin: 4px 0;
+  font-size: clamp(36px, 6vw, 70px);
+  color: #fff;
+  letter-spacing: 0.08em;
+  text-shadow:
+    0 0 24px var(--boss),
+    0 3px 0 #000;
+}
+#bossbanner .epithet {
+  font-family: 'Cinzel', serif;
+  font-style: italic;
+  color: #e6d9c2;
+  font-size: 18px;
+}
+@keyframes bossIn {
+  0% {
+    opacity: 0;
+    transform: scaleY(0.2);
+  }
+  10%,
+  80% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+#prologue {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8vw;
+  background: radial-gradient(ellipse at 50% 60%, rgba(60, 24, 8, 0.6), #050307 70%);
+  cursor: pointer;
+  transition: opacity 0.8s;
+}
+#prologue.out {
+  opacity: 0;
+  pointer-events: none;
+}
+#prologue .pl-line {
+  font-family: 'Cinzel', serif;
+  font-size: clamp(20px, 3vw, 34px);
+  color: #f2e6cf;
+  text-align: center;
+  max-width: 900px;
+  line-height: 1.4;
+  text-shadow: 0 0 30px rgba(255, 140, 60, 0.35);
+  animation: plIn 1.4s ease;
+}
+#prologue .pl-who {
+  margin-top: 18px;
+  color: #ffb347;
+  letter-spacing: 0.2em;
+  font-size: 14px;
+  animation: plIn 2s ease;
+}
+#prologue .pl-hint {
+  position: absolute;
+  bottom: 24px;
+  color: var(--muted);
+  font-size: 13px;
+}
+@keyframes plIn {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+}
+
+/* ===================================================================== */
+/* Title additions                                                       */
+/* ===================================================================== */
+.logo {
+  position: relative;
+}
+.logo .ember-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(560px, 80vw);
+  height: min(560px, 80vw);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 138, 60, 0.18) 0%, rgba(255, 90, 30, 0.06) 40%, transparent 65%);
+  animation: emberPulse 5s ease-in-out infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+@keyframes emberPulse {
+  50% {
+    transform: translate(-50%, -50%) scale(1.12);
+    opacity: 0.7;
+  }
+}
+.logo h1 {
+  background-size: 100% 200%;
+  animation: logoShine 7s ease-in-out infinite;
+}
+@keyframes logoShine {
+  50% {
+    background-position: 0 100%;
+  }
+}
+.btn.continue {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  text-align: left;
+}
+.btn.continue img {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+.btn.continue span {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+.btn.continue small {
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  opacity: 0.8;
+}
+.whisper {
+  margin-top: 26px;
+  max-width: 560px;
+  text-align: center;
+  font-style: italic;
+  color: #b8a99a;
+  font-size: 15px;
+  animation: fadeIn 2s ease;
+}
+
+/* ===================================================================== */
+/* HUD additions                                                         */
+/* ===================================================================== */
+#bossbar .bar {
+  position: relative;
+}
+#bossbar .bar u {
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0 6px #fff;
+}
+#bossbar .ep {
+  margin-top: 2px;
+  font-family: 'Cinzel', serif;
+  font-style: italic;
+  font-size: 12px;
+  color: #d6c7b0;
+  text-shadow: 0 1px 3px #000;
+}
+#bossbar.enraged .nm {
+  color: #fff;
+  animation: enrage 0.6s ease-in-out infinite alternate;
+}
+#bossbar.enraged .bar i {
+  background: linear-gradient(90deg, #450a0a, #dc2626, #fb923c);
+}
+@keyframes enrage {
+  to {
+    text-shadow:
+      0 0 18px #ef4444,
+      0 0 4px #fff;
+  }
+}
+#combo {
+  position: absolute;
+  left: 14px;
+  top: 96px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-family: 'Cinzel', serif;
+  text-shadow:
+    0 0 12px currentColor,
+    0 2px 3px #000;
+  animation: comboIn 0.3s ease;
+}
+#combo b {
+  font-size: 34px;
+  line-height: 1;
+}
+#combo span {
+  font-size: 14px;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+}
+#combo .cbar {
+  width: 120px;
+  height: 3px;
+  margin-top: 4px;
+  background: rgba(0, 0, 0, 0.5);
+}
+#combo .cbar i {
+  display: block;
+  height: 100%;
+  background: currentColor;
+}
+#combo.t4 b,
+#combo.t5 b {
+  font-size: 42px;
+  animation: comboBeat 0.5s ease-in-out infinite alternate;
+}
+@keyframes comboIn {
+  from {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+@keyframes comboBeat {
+  to {
+    transform: scale(1.08);
+  }
+}
+#boons {
+  position: absolute;
+  right: 14px;
+  top: 112px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#boons .boon img {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  box-shadow: 0 0 10px rgba(192, 132, 252, 0.5);
+}
+#boons .boon.spent img {
+  filter: grayscale(1);
+  opacity: 0.4;
+  box-shadow: none;
+}
+#reso {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+#reso .chip {
+  --c: #fff;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 2px;
+  font-size: 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+}
+#reso .chip img {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+#reso .chip.on {
+  color: var(--c);
+  border-color: var(--c);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--c) 40%, transparent);
+}
+#buff {
+  display: inline-block;
+  margin-bottom: 6px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  color: #5eead4;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(94, 234, 212, 0.5);
+}
+#buff.trial {
+  color: #e9d5ff;
+  border-color: #c084fc;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+/* ===================================================================== */
+/* Modals: card dealing, resonance hints, boons, chest reveal, results   */
+/* ===================================================================== */
+.card.deal {
+  animation: cardDeal 0.55s cubic-bezier(0.2, 0.9, 0.3, 1.15) backwards;
+  animation-delay: calc(var(--i, 0) * 0.09s);
+}
+@keyframes cardDeal {
+  from {
+    opacity: 0;
+    transform: translateY(60px) rotateY(80deg) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.reso-hint {
+  --c: #fff;
+  font-size: 13px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: var(--c);
+  border: 1px solid var(--c);
+  background: color-mix(in srgb, var(--c) 12%, transparent);
+  animation: glowPulse 1.6s ease-in-out infinite;
+}
+@keyframes glowPulse {
+  50% {
+    box-shadow: 0 0 12px color-mix(in srgb, var(--c) 55%, transparent);
+  }
+}
+.boon-modal {
+  background: radial-gradient(ellipse at 50% 0%, rgba(126, 34, 206, 0.35), transparent 60%), var(--panel);
+  border-color: rgba(192, 132, 252, 0.45);
+}
+.boon-title {
+  color: #e9d5ff !important;
+  text-shadow: 0 0 24px #a855f7 !important;
+}
+.boon-card {
+  align-items: center;
+  text-align: center;
+  border-color: rgba(192, 132, 252, 0.35);
+  background: linear-gradient(180deg, rgba(46, 20, 70, 0.95), rgba(12, 10, 22, 0.97));
+}
+.boon-card:hover {
+  border-color: #e9d5ff;
+  box-shadow:
+    0 12px 30px rgba(0, 0, 0, 0.6),
+    0 0 26px rgba(192, 132, 252, 0.45);
+}
+.boon-card .boon-icon {
+  margin-top: 6px;
+  filter: drop-shadow(0 0 14px rgba(192, 132, 252, 0.6));
+  animation: float 3s ease-in-out infinite;
+}
+.boon-card .nm {
+  font-family: 'Cinzel', serif;
+  font-size: 19px;
+  color: #f3e8ff;
+}
+.boon-card .desc {
+  color: #d8cfe8;
+  font-size: 14px;
+}
+@keyframes float {
+  50% {
+    transform: translateY(-5px);
+  }
+}
+.chest-art {
+  text-align: center;
+  animation: chestOpen 0.8s ease;
+}
+.chest-art img {
+  filter: drop-shadow(0 0 22px rgba(255, 215, 0, 0.7));
+}
+.chest-art.boss img {
+  filter: drop-shadow(0 0 26px rgba(255, 68, 170, 0.8));
+}
+@keyframes chestOpen {
+  0% {
+    transform: scale(0.6) rotate(0deg);
+  }
+  20% {
+    transform: scale(0.9) rotate(-8deg);
+  }
+  40% {
+    transform: scale(0.9) rotate(8deg);
+  }
+  60% {
+    transform: scale(1.25) rotate(0deg);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.reward.reveal {
+  animation: rewardPop 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.3) backwards;
+  animation-delay: calc(0.5s + var(--i, 0) * 0.22s);
+}
+@keyframes rewardPop {
+  from {
+    opacity: 0;
+    transform: scale(0.4) translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.epitaph {
+  margin: 4px auto 14px;
+  max-width: 640px;
+  text-align: center;
+  font-family: 'Cinzel', serif;
+  font-size: 18px;
+  font-style: italic;
+  color: #eadfca;
+  animation: plIn 1.6s ease;
+}
+.epitaph cite {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #ffb347;
+  letter-spacing: 0.2em;
+  font-style: normal;
+}
+.summary .st .rec {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.15em;
+  color: #fde047;
+  text-shadow: 0 0 8px #fde047;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* ===================================================================== */
+/* Codex: The Long Night                                                 */
+/* ===================================================================== */
+.chronicle {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 860px;
+}
+.lore-ch {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(10, 8, 16, 0.75);
+  padding: 4px 16px;
+}
+.lore-ch summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  cursor: pointer;
+  font-family: 'Cinzel', serif;
+  font-size: 17px;
+  color: var(--gold);
+  list-style: none;
+}
+.lore-ch summary::-webkit-details-marker {
+  display: none;
+}
+.lore-ch .num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  font-size: 13px;
+  flex: none;
+}
+.lore-ch p {
+  font-size: 16px;
+  line-height: 1.55;
+  color: #ddd3c2;
+  margin: 0 0 12px;
+}
+.lore-ch[open] {
+  border-color: rgba(231, 195, 104, 0.5);
+  box-shadow: 0 0 22px rgba(231, 195, 104, 0.1);
+}
+.lore-ch.locked summary {
+  color: var(--muted);
+  cursor: default;
+}
+@media (max-width: 700px) {
+  #narrator {
+    bottom: 150px;
+  }
+  #narrator .line {
+    font-size: 15px;
+  }
+  #combo {
+    top: 120px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card.deal,
+  .reward.reveal,
+  .chest-art,
+  #combo,
+  #combo b,
+  .logo .ember-ring,
+  .logo h1 {
+    animation: none !important;
+  }
 }

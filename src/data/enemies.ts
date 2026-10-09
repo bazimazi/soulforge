@@ -25,12 +25,28 @@ export const ENEMIES: Record<string, EnemyDef> = {
 };
 
 export const BOSSES: Record<string, BossDef> = {
-  bone_colossus: { name: 'Bone Colossus', hp: 3200, speed: 72, dmg: 32, xp: 200, r: 48, mass: 40, col: { body: '#e7e0d0', eye: '#7dd3fc' }, attacks: ['charge', 'ring', 'summon'], lore: 'A king’s skeleton wearing his army’s bones as armor.' },
-  blood_matriarch: { name: 'Blood Matriarch', hp: 7000, speed: 90, dmg: 36, xp: 400, r: 46, mass: 40, col: { body: '#450a0a', eye: '#f87171', accent: '#ef4444' }, attacks: ['spiral', 'summon', 'dash'], summon: 'spider', lore: 'Mother of every spider in the crypt. She is very protective.' },
-  frost_wyrm: { name: 'Frost Wyrm', hp: 13000, speed: 80, dmg: 42, xp: 700, r: 52, mass: 50, col: { body: '#0e7490', eye: '#bae6fd' }, attacks: ['volley', 'slam', 'ring', 'dash'], lore: 'It breathes winter. Where it lands, nothing thaws.' },
-  void_leviathan: { name: 'Void Leviathan', hp: 24000, speed: 64, dmg: 48, xp: 1200, r: 58, mass: 60, col: { body: '#3b0764', eye: '#e879f9' }, attacks: ['spiral', 'pull', 'ring', 'summon'], summon: 'wraith', lore: 'A piece of the rift, made flesh so it could hunt.' },
-  infernal_titan: { name: 'Infernal Titan', hp: 40000, speed: 70, dmg: 56, xp: 2000, r: 62, mass: 80, col: { body: '#7f1d1d', eye: '#fde047', accent: '#ff6a00' }, attacks: ['slam', 'charge', 'volley', 'summon'], summon: 'bomber', lore: 'The night’s general. It burns because it wants to.' },
+  bone_colossus: { name: 'Bone Colossus', hp: 3200, speed: 72, dmg: 32, xp: 200, r: 48, mass: 40, col: { body: '#e7e0d0', eye: '#7dd3fc' }, attacks: ['charge', 'ring', 'summon'], phase2: ['barrage'], lore: 'A king’s skeleton wearing his army’s bones as armor.' },
+  blood_matriarch: { name: 'Blood Matriarch', hp: 7000, speed: 90, dmg: 36, xp: 400, r: 46, mass: 40, col: { body: '#450a0a', eye: '#f87171', accent: '#ef4444' }, attacks: ['spiral', 'summon', 'dash'], phase2: ['cross', 'hazard'], hazard: { color: '#991b1b' }, summon: 'spider', lore: 'Mother of every spider in the crypt. She is very protective.' },
+  frost_wyrm: { name: 'Frost Wyrm', hp: 13000, speed: 80, dmg: 42, xp: 700, r: 52, mass: 50, col: { body: '#0e7490', eye: '#bae6fd' }, attacks: ['volley', 'slam', 'ring', 'dash'], phase2: ['barrage', 'hazard'], hazard: { color: '#bae6fd', status: 'chill' }, lore: 'It breathes winter. Where it lands, nothing thaws.' },
+  void_leviathan: { name: 'Void Leviathan', hp: 24000, speed: 64, dmg: 48, xp: 1200, r: 58, mass: 60, col: { body: '#3b0764', eye: '#e879f9' }, attacks: ['spiral', 'pull', 'ring', 'summon'], phase2: ['cross', 'barrage'], summon: 'wraith', lore: 'A piece of the rift, made flesh so it could hunt.' },
+  infernal_titan: { name: 'Infernal Titan', hp: 40000, speed: 70, dmg: 56, xp: 2000, r: 62, mass: 80, col: { body: '#7f1d1d', eye: '#fde047', accent: '#ff6a00' }, attacks: ['slam', 'charge', 'volley', 'summon'], phase2: ['barrage', 'hazard', 'cross'], hazard: { color: '#f97316', status: 'burn' }, summon: 'bomber', lore: 'The night’s general. It burns because it wants to.' },
 };
+/* elite affixes: elites roll 1 (2 after 10:00, 3 after 22:00) of these; `minute` = earliest appearance */
+export interface AffixDef { id: string; name: string; color: string; desc: string; minute: number }
+export const ELITE_AFFIXES: AffixDef[] = [
+  { id: 'swift', name: 'Swift', color: '#6ee7b7', desc: 'Moves 45% faster.', minute: 0 },
+  { id: 'warded', name: 'Warded', color: '#7dd3fc', desc: 'A barrier absorbs damage and regrows when left alone.', minute: 0 },
+  { id: 'vampiric', name: 'Vampiric', color: '#f87171', desc: 'Regenerates, and heals whenever it strikes you.', minute: 0 },
+  { id: 'frenzied', name: 'Frenzied', color: '#ef4444', desc: 'Below half health it moves and hits much harder.', minute: 0 },
+  { id: 'molten', name: 'Molten', color: '#fb923c', desc: 'Leaves burning ground in its wake.', minute: 3 },
+  { id: 'brood', name: 'Brood', color: '#a3e635', desc: 'Bursts into a pack of smaller copies when slain.', minute: 4 },
+  { id: 'colossal', name: 'Colossal', color: '#fbbf24', desc: 'Huge, far tougher and immovable.', minute: 5 },
+  { id: 'arcane', name: 'Arcane', color: '#c084fc', desc: 'Periodically fires a ring of bolts.', minute: 6 },
+  { id: 'necrotic', name: 'Necrotic', color: '#86efac', desc: 'Raises the dead to fight beside it.', minute: 8 },
+  { id: 'phasing', name: 'Phasing', color: '#e879f9', desc: 'Blinks to your side after a brief warning.', minute: 10 },
+];
+export const AFFIX_BY_ID: Record<string, AffixDef> = {}; ELITE_AFFIXES.forEach((a) => (AFFIX_BY_ID[a.id] = a));
+
 export const BOSS_ORDER: string[] = ['bone_colossus', 'blood_matriarch', 'frost_wyrm', 'void_leviathan', 'infernal_titan'];
 
 /* which enemy types are present at a given minute, with spawn weights */

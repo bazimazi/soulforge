@@ -54,6 +54,8 @@ export interface PlayerStats {
   slowPower: number;
   execute: number;
   sigDmg: number;
+  /** Elemental reaction damage bonus (see data/synergy.ts). */
+  reactDmg: number;
 }
 export type StatKey = keyof PlayerStats;
 /** Additive stat deltas, e.g. `{ might: 0.08 }`. May include derived keys like `maxHpPct`. */
@@ -324,11 +326,15 @@ export interface EnemyDef {
   explode?: { r: number };
 }
 
-export type BossAttackType = 'charge' | 'dash' | 'spiral' | 'volley' | 'slam' | 'pull' | 'summon' | 'ring';
+export type BossAttackType = 'charge' | 'dash' | 'spiral' | 'volley' | 'slam' | 'pull' | 'summon' | 'ring' | 'barrage' | 'cross' | 'hazard';
 export interface BossDef extends EnemyDef {
   mass: number;
   attacks: BossAttackType[];
+  /** Extra attacks added to the rotation when the boss enrages at half health. */
+  phase2: BossAttackType[];
   summon?: string;
+  /** Hazard pools this boss leaves behind ('hazard' attack, phase two). */
+  hazard?: { color: string; status?: StatusSpec['type'] };
 }
 
 export interface Burn {
@@ -344,6 +350,12 @@ export interface EnemyStatus {
   chillN?: number;
   freeze?: number;
   stun?: number;
+  /** Lightning hits leave enemies shocked for a few seconds (reaction ingredient). */
+  shock?: number;
+  /** Superconduct: seconds of taking extra damage from every source. */
+  brittle?: number;
+  /** Sim time before this enemy can react again (reactions consume statuses; this stops chains). */
+  reactAt?: number;
   /** Character-applied marks (hunted, death marks, void stacks…). */
   [mark: string]: any;
 }
@@ -360,6 +372,8 @@ export interface BossAttack {
   x?: number;
   y?: number;
   off?: number;
+  /** barrage: impact points, detonated one by one. */
+  pts?: number[];
 }
 
 export interface Enemy {
@@ -400,6 +414,19 @@ export interface Enemy {
   spawnT: number;
   flip: number;
   noSplit?: boolean;
+  /** Bombers: seconds left on an armed fuse (they stop and flash, then detonate). */
+  fuse?: number;
+  /** Elite affix ids (data/enemies.ts ELITE_AFFIXES), strongest first. */
+  affixes?: string[];
+  /** Warded elites: damage-absorbing barrier that regenerates when left alone. */
+  barrier?: number;
+  barrierMax?: number;
+  /** Sim time after which a Warded barrier starts regrowing. */
+  barrierAt?: number;
+  /** Affix ability timer (summons, blinks, rings, molten trail). */
+  affT?: number;
+  /** Bosses: 1, or 2 once enraged at half health. */
+  phase?: number;
   // bosses
   bossId?: string;
   bossTier: number;
@@ -420,7 +447,7 @@ export type SpriteSpec =
   | { kind: 'bolt' | 'arrow' | 'dagger' | 'shard' | 'axe' | string; color: string; len?: number; wid?: number; size?: number };
 
 export interface StatusSpec {
-  type: 'burn' | 'bleed' | 'chill' | 'freeze' | 'stun';
+  type: 'burn' | 'bleed' | 'chill' | 'freeze' | 'stun' | 'shock';
   dur?: number;
   dps?: number;
   power?: number;
@@ -521,6 +548,39 @@ export interface Mine {
   cluster?: number;
 }
 
+/** Enemy-owned ground hazard (molten trails, boss pools): hurts the player while they stand in it. */
+export interface Hazard {
+  x: number;
+  y: number;
+  r: number;
+  dmg: number;
+  life: number;
+  max: number;
+  /** Seconds before the pool becomes harmful (it fades in as a warning). */
+  arm: number;
+  color: string;
+  status?: StatusSpec['type'];
+  tickT: number;
+  dead: boolean;
+}
+
+export type ShrineKind = 'blood' | 'fortune' | 'trial' | 'haste' | 'life' | 'curse';
+/** A map shrine: stand inside it to channel; when the charge fills, its effect fires. */
+export interface Shrine {
+  id: number;
+  kind: ShrineKind;
+  x: number;
+  y: number;
+  r: number;
+  /** Channel progress 0..1. */
+  charge: number;
+  used: boolean;
+  /** Seconds since spawn / since use (fade-out). */
+  age: number;
+  usedAt: number;
+  dead: boolean;
+}
+
 export interface Ally {
   kind: string;
   x: number;
@@ -585,7 +645,10 @@ export interface DamageInfo {
   /** Bonus crit chance from the source. */
   crit?: number | boolean;
   execute?: boolean;
+  /** Damage reflected by thorns (no lifesteal, no bomber blast). */
   thorns?: boolean;
+  /** A bomber killed by this hit does not detonate (screen-clearing pickups). */
+  noBlast?: boolean;
   // filled in by damageEnemy
   mult?: number;
   critBonus?: number;
@@ -718,13 +781,19 @@ export interface RunSummary {
   weapons: { id: string; level: number; evolved: boolean; dmg: number }[];
   passives: { id: string; level: number }[];
   eclipse: boolean;
+  /** What landed the killing blow (enemy name, 'projectile', …). */
+  killedBy: string;
+  bestCombo: number;
+  reactions: number;
+  boons: string[];
+  shrines: number;
 }
 
 /* ------------------------------------------------------------------ */
 /* Simulation ⇄ host boundary                                         */
 /* ------------------------------------------------------------------ */
 
-export type GameState = 'idle' | 'play' | 'paused' | 'levelup' | 'chest' | 'over';
+export type GameState = 'idle' | 'play' | 'paused' | 'levelup' | 'chest' | 'boon' | 'over';
 
 /** Everything the simulation tells the outside world. The sim never touches DOM/UI/audio directly. */
 export type GameEvents = {
@@ -734,9 +803,43 @@ export type GameEvents = {
   chest: (rewards: ChestReward[], boss: boolean) => void;
   gameOver: (summary: RunSummary) => void;
   runStart: (stage: StageDef) => void;
-  /** First encounter of a weapon/boss this run (feeds the codex). */
-  discover: (kind: 'weapon' | 'boss', id: string) => void;
+  /** First encounter of a weapon/boss/boon/reaction this run (feeds the codex). */
+  discover: (kind: 'weapon' | 'boss' | 'boon' | 'reaction', id: string) => void;
+  /** A boss chest grants a choice of run-long boons. */
+  boon: (options: BoonDef[]) => void;
+  /** A narrative moment the presentation layer may voice (narrator, character, boss lines). */
+  story: (beat: StoryBeatId, ref?: string) => void;
 };
+
+export type StoryBeatId =
+  | 'runStart'
+  | 'bossIntro'
+  | 'bossPhase'
+  | 'bossDown'
+  | 'evolve'
+  | 'eclipse'
+  | 'lowHp'
+  | 'revive'
+  | 'shrine'
+  | 'combo'
+  | 'boon'
+  | 'reaction'
+  | 'elite'
+  | 'death';
+
+/** A run-long modifier chosen after a boss falls (data/boons.ts). */
+export interface BoonDef {
+  id: string;
+  name: string;
+  icon: IconSpec;
+  desc: string;
+  /** Permanent stat deltas while owned. */
+  stats?: StatBag;
+  /** Mechanic switch read by the simulation (`player.f[flag]`). */
+  flag?: string;
+  /** One-off effect when picked. */
+  onPick?(g: Game, p: Player): void;
+}
 
 /** Abstract input the simulation polls once per step (keyboard/gamepad/touch, or a test script). */
 export interface InputSource {

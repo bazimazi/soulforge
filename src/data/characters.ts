@@ -10,7 +10,7 @@ const H = WH, W = registerWeapon;
 export const CHAR_BASE: PlayerStats = {
   maxHp: 100, regen: 0, armor: 0, speed: 165, might: 1, area: 1, projSpeed: 1, duration: 1, amount: 0, cooldown: 1, luck: 1, growth: 1, greed: 1, magnet: 80,
   revival: 0, crit: 0.05, critDmg: 1.5, dodge: 0, lifesteal: 0, curse: 1, rerolls: 0, skips: 0, banishes: 0, activeCd: 1, thorns: 0, healing: 1, eliteDmg: 0, burnDmg: 0,
-  shieldPower: 1, minionDmg: 0, xpBonus: 0, matFind: 0, startLevel: 0, pierce: 0, knockback: 0, chestLuck: 0, slowPower: 0, execute: 0, sigDmg: 0,
+  shieldPower: 1, minionDmg: 0, xpBonus: 0, matFind: 0, startLevel: 0, pierce: 0, knockback: 0, chestLuck: 0, slowPower: 0, execute: 0, sigDmg: 0, reactDmg: 0,
 };
 
 /* talent tree builders */
@@ -697,6 +697,8 @@ CHARS.push({
       g.fx.shake(10); g.sfx('explode');
     } },
   hooks: {
+    // Juggernaut: thorns (resolved in Game.hitPlayer) also return twice his Armor
+    init(g, p) { p.thornsArmor = 2; },
     update(g, p, dt) {
       p.dyn.might = p.stats.armor * 0.02 + (p.f.mountain ? 0.1 : 0);
       const missing = 1 - p.hp / p.stats.maxHp;
@@ -705,10 +707,6 @@ CHARS.push({
       p.unstopT = (p.unstopT || 0) - dt;
       p.dyn.dmgTaken = p.unstopT > 0 ? 0.8 : 1;
       if (p.f.mountain) p.auraColor = '#fbbf24';
-    },
-    onHurt(g, p, dmg, src) {
-      if (src && (src as Enemy).hp != null && p.stats.thorns > 0) g.damageEnemy(src as Enemy, dmg * p.stats.thorns + p.stats.armor * 2, { weapon: { def: WEAPONS.seismic_slam, id: 'seismic_slam', ability: true, thorns: true }, quiet: true });
-      return dmg;
     },
   },
   talents: [
@@ -747,7 +745,7 @@ CHARS.push({
    9. NYX — THE VOID WITCH
    ===================================================================== */
 W({
-  id: 'void_orb', name: 'Void Orb', icon: { g: 'blackhole', c: '#c084fc' }, tags: ['magic', 'void'], char: 'nyx',
+  id: 'void_orb', name: 'Void Orb', icon: { g: 'blackhole', c: '#c084fc' }, tags: ['magic', 'void', 'shadow'], char: 'nyx',
   desc: 'A slow orb of nothing that drags enemies in and unmakes them.',
   base: { dmg: 7, cd: 2.3, amount: 1, speed: 110, area: 1, duration: 2.6, pull: 1, tick: 0.25 },
   levels: [{ area: 0.2 }, { dmg: 3 }, { amount: 1 }, { pull: 0.4, duration: 0.5 }, { dmg: 4, area: 0.2 }, { cd: -0.15 }, { amount: 1, dmg: 6 }],
@@ -839,7 +837,7 @@ W({
   fire(g, w, s) {
     const p = g.player;
     const alive = g.alliesOf('turret').length;
-    if (alive >= s.turrets) return;
+    if (alive >= s.turrets + s.amount - 1) return; // Amount (Twin Mirror…) adds turrets
     const a = rand() * U.TAU;
     g.spawnAlly({
       kind: 'turret', x: p.x + Math.cos(a) * 30, y: p.y + Math.sin(a) * 30, life: s.duration, sprite: 'turret', color: '#fb923c', range: 320 * s.range, weapon: w,
@@ -871,7 +869,7 @@ CHARS.push({
       if (p.f.drone_swarm) { const d = g.alliesOf('drone'); for (let i = d.length; i < 2; i++) g.spawnAlly({ kind: 'drone', x: p.x, y: p.y, life: 1e9, sprite: 'drone', color: '#fb923c', dmg: () => (6 + p.level * 0.9) * p.stats.might * (1 + p.stats.minionDmg), fireCd: 0.7, range: 260, orbitOff: i * Math.PI }); }
       if (p.f.prime) p.auraColor = '#fb923c';
     },
-    onAllySpawn(g, p, a) { if (a.kind === 'turret') g.nova(a.x, a.y, 90, (10 + p.level * 1.5) * p.stats.might, { def: WEAPONS.sentry_turret, id: 'sentry_turret', ability: true }, { color: '#fb923c', speed: 500, quiet: true, status: { type: 'stun', dur: 0.4 } }); },
+    onAllySpawn(g, p, a) { if (a.kind === 'turret') g.nova(a.x, a.y, 90, (10 + p.level * 1.5) * p.stats.might, { def: WEAPONS.sentry_turret, id: 'sentry_turret', ability: true }, { color: '#fb923c', speed: 500, quiet: true, status: { type: 'stun', dur: 0.4 }, onHit: (e) => g.applyStatus(e, 'shock', { dur: 3 }) }); },
   },
   talents: [
     branch('engineer', 'Engineer', '#fb923c', [
@@ -909,7 +907,7 @@ CHARS.push({
    11. VESPER — THE BLOOD COUNTESS
    ===================================================================== */
 W({
-  id: 'blood_nova', name: 'Blood Nova', icon: { g: 'drop', c: '#ef4444' }, tags: ['blood', 'physical'], char: 'vesper',
+  id: 'blood_nova', name: 'Blood Nova', icon: { g: 'drop', c: '#ef4444' }, tags: ['blood', 'physical', 'shadow'], char: 'vesper',
   desc: 'A ring of crimson blades bursts from you. Every enemy struck heals you.',
   base: { dmg: 17, cd: 1.7, amount: 1, area: 1, heal: 0.4, knock: 0.7 },
   levels: [{ area: 0.2 }, { dmg: 8 }, { heal: 0.2 }, { dmg: 10, area: 0.15 }, { cd: -0.15 }, { heal: 0.3 }, { amount: 1, dmg: 16 }],
@@ -950,7 +948,7 @@ CHARS.push({
       p.dyn.might = bloodFrac * 0.8 + (p.f.eternal_hunger ? 0.1 : 0);
       const low = p.hp < p.stats.maxHp * 0.3;
       p.dyn.dodge = p.f.immortal_night && low ? 0.3 : 0;
-      p.dyn.lifesteal = p.f.immortal_night && low ? p.stats.lifesteal : 0;
+      p.lifestealMul = p.f.immortal_night && low ? 2 : 1;
       if (p.feastT > 0) {
         p.feastT -= dt; p.feastTick -= dt;
         if (p.feastTick <= 0) {

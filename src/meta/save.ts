@@ -5,6 +5,7 @@ import { BESTIARY_STAT, BESTIARY_TIERS, BOSS_STAT, BOSS_TIERS, MILESTONES, PARAG
 import { AFFIX, ANVIL, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SIGILS, SLOT_BY_ID, UNIQUE_BY_ID, anvilCost, craftCost, craftItem, forgeLevelPerks, forgeXpFor, itemStats, metaRng, reforgeCost, salvageValue, upgradeCost } from '../data/forge';
 import type { AnvilDef, Cost, Item, Reward, SigilDef, TransmuteRecipe } from '../data/forge';
 import { STAGES } from '../data/passives';
+import { CHRONICLE, type ChronicleChapter } from '../data/story';
 import { WEAPONS } from '../data/weapons';
 import type { Flags, Materials, MetaBonuses, RunSummary, StatBag, TalentNode } from '../game/types';
 
@@ -16,7 +17,7 @@ import type { Flags, Materials, MetaBonuses, RunSummary, StatBag, TalentNode } f
 export const SAVE_KEY = 'soulforge_save_v1';
 /** Last unreadable save, or the save that an import replaced. */
 export const BACKUP_KEY = 'soulforge_save_backup';
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 /** Coalescing window for `Save.save()`. */
 export const SAVE_DEBOUNCE_MS = 250;
 
@@ -53,6 +54,9 @@ export interface CodexSave {
   weapons: Record<string, WeaponCodexEntry>;
   claimed: Record<string, boolean>;
   uniques: Record<string, boolean>;
+  /** v3: boons taken and elemental reactions triggered at least once. */
+  boons: Record<string, boolean>;
+  reactions: Record<string, boolean>;
 }
 
 export interface LifetimeStats {
@@ -68,6 +72,10 @@ export interface LifetimeStats {
   bestHeat10: number;
   totalTime: number;
   elites: number;
+  /** v3 */
+  bestCombo: number;
+  reactions: number;
+  shrines: number;
 }
 
 export interface StageProgress {
@@ -85,6 +93,8 @@ export interface Settings {
   quality: number;
   /** v2: tone down screen shake/flashes. */
   reducedMotion: boolean;
+  /** v3: bloom & colour grading. */
+  postfx: boolean;
 }
 
 export interface ForgeProgress {
@@ -115,10 +125,12 @@ export interface SaveData {
   settings: Settings;
   seen: Record<string, boolean>;
   notices: string[];
+  /** v3: narrative progress — prologue shown, chronicle chapters read. */
+  story: { prologue: boolean; read: Record<string, boolean> };
 }
 
 export interface UnlockEvent {
-  type: 'char' | 'stage' | 'milestone' | 'chapter';
+  type: 'char' | 'stage' | 'milestone' | 'chapter' | 'story';
   id: string;
   idx?: number;
   text: string;
@@ -130,12 +142,13 @@ export function defaults(): SaveData {
   return {
     v: SAVE_VERSION, gold: 0, embers: 0, mats: { iron: 0, dust: 0, crystal: 0, star: 0 },
     chars: {}, anvil: {}, forge: { xp: 0, level: 1 }, items: [], equipped: {}, sigils: {},
-    codex: { enemies: {}, bosses: {}, weapons: {}, claimed: {}, uniques: {} },
-    stats: { runs: 0, kills: 0, bossKills: 0, bestTime: 0, bestLevel: 0, evolves: 0, goldEarned: 0, legendaries: 0, bestHeat10: 0, totalTime: 0, elites: 0 },
+    codex: { enemies: {}, bosses: {}, weapons: {}, claimed: {}, uniques: {}, boons: {}, reactions: {} },
+    stats: { runs: 0, kills: 0, bossKills: 0, bestTime: 0, bestLevel: 0, evolves: 0, goldEarned: 0, legendaries: 0, bestHeat10: 0, totalTime: 0, elites: 0, bestCombo: 0, reactions: 0, shrines: 0 },
     stages: { unlocked: ['ashen'], best: {} },
     omens: {}, lastChar: 'kael', lastStage: 'ashen',
-    settings: { sfx: 0.6, music: 0.35, shake: 1, dmgNumbers: true, fps: false, quality: 1, reducedMotion: false },
+    settings: { sfx: 0.6, music: 0.35, shake: 1, dmgNumbers: true, fps: false, quality: 1, reducedMotion: false, postfx: true },
     seen: {}, notices: [],
+    story: { prologue: false, read: {} },
   };
 }
 
@@ -178,6 +191,12 @@ const MIGRATIONS: Record<number, (d: RawObject) => RawObject> = {
     const settings = isPlainObject(d.settings) ? { ...d.settings } : {};
     if (typeof settings.reducedMotion !== 'boolean') settings.reducedMotion = false;
     return { ...d, settings, v: 2 };
+  },
+  // v2 → v3: codex.boons/reactions, stats.bestCombo/reactions/shrines and `story` — all filled from
+  // defaults by the merge. A save that already played counts as having seen the prologue.
+  2: (d) => {
+    const story = isPlainObject(d.story) ? d.story : { prologue: isPlainObject(d.stats) && Number(d.stats.runs) > 0, read: {} };
+    return { ...d, story, v: 3 };
   },
 };
 
@@ -367,6 +386,9 @@ const Save = {
         if (this.chapterMet(ch.id, i) && !d.seen['ch_' + ch.id + i]) { d.seen['ch_' + ch.id + i] = true; out.push({ type: 'chapter', id: ch.id, idx: i, text: ch.name + ' — chapter unlocked: ' + chap.title }); }
       });
     });
+    CHRONICLE.forEach((ch) => {
+      if (this.chronicleUnlocked(ch) && !d.seen['lore_' + ch.id]) { d.seen['lore_' + ch.id] = true; out.push({ type: 'story', id: ch.id, text: 'The Long Night — a new chapter: ' + ch.title }); }
+    });
     return out;
   },
   chapterMet(charId: string, i: number): boolean {
@@ -471,10 +493,27 @@ const Save = {
    * Record a first encounter reported by the simulation's `discover` event. Can fire mid-run, so it
    * does not write; the next `recordRun` (or any other save) persists it.
    */
-  discover(kind: 'weapon' | 'boss', id: string): void {
+  discover(kind: 'weapon' | 'boss' | 'boon' | 'reaction', id: string): void {
     const cx = this.data.codex;
     if (kind === 'weapon') (cx.weapons[id] ??= {}).found = true;
-    else cx.bosses[id] = cx.bosses[id] || 0;
+    else if (kind === 'boss') cx.bosses[id] = cx.bosses[id] || 0;
+    else if (kind === 'boon') cx.boons[id] = true;
+    else cx.reactions[id] = true;
+  },
+  /* ---------- the main story ---------- */
+  /** Has the player's progress revealed this chapter of The Long Night? */
+  chronicleUnlocked(ch: ChronicleChapter): boolean {
+    const d = this.data, u = ch.unlock;
+    switch (u.kind) {
+      case 'runs': return d.stats.runs >= u.v;
+      case 'bossKill': return (d.codex.bosses[u.ref] || 0) >= 1;
+      case 'bosses': return d.stats.bossKills >= u.v;
+      case 'stage': return d.stages.unlocked.includes(u.ref);
+      case 'time': return d.stats.bestTime >= u.v;
+      case 'stageTime': return (d.stages.best[u.ref] || 0) >= u.v;
+      case 'forge': return d.forge.level >= u.v;
+      case 'chars': return Object.values(d.chars).filter((c) => c.unlocked).length >= u.v;
+    }
   },
   /* ---------- run results ---------- */
   recordRun(r: RunSummary): { levelUps: number; unlocks: UnlockEvent[] } {
@@ -487,6 +526,10 @@ const Save = {
     d.stats.bestTime = Math.max(d.stats.bestTime, r.time); c.bestTime = Math.max(c.bestTime, r.time);
     d.stats.bestLevel = Math.max(d.stats.bestLevel, r.level); c.bestLevel = Math.max(c.bestLevel, r.level);
     d.stats.evolves += r.evolves;
+    d.stats.bestCombo = Math.max(d.stats.bestCombo, r.bestCombo || 0);
+    d.stats.reactions += r.reactions || 0;
+    d.stats.shrines += r.shrines || 0;
+    for (const b of r.boons || []) d.codex.boons[b] = true;
     if (r.time >= 600) d.stats.bestHeat10 = Math.max(d.stats.bestHeat10, r.heat);
     d.stages.best[r.stageId] = Math.max(d.stages.best[r.stageId] || 0, r.time);
     this.grant({ gold: r.gold, embers: r.embers, iron: r.mats.iron, dust: r.mats.dust, crystal: r.mats.crystal, star: r.mats.star });

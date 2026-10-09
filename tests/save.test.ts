@@ -9,6 +9,8 @@ function v1Save(): Record<string, unknown> {
   const d: any = defaults();
   d.v = 1;
   delete d.settings.reducedMotion; // field introduced in v2
+  delete d.story; // introduced in v3
+  d.stats.runs = 3;
   d.gold = 1234;
   d.embers = 7;
   d.chars = {
@@ -51,6 +53,11 @@ function run(over: Partial<RunSummary> = {}): RunSummary {
     weapons: [],
     passives: [],
     eclipse: false,
+    killedBy: 'Ghoul',
+    bestCombo: 40,
+    reactions: 3,
+    boons: [],
+    shrines: 1,
     ...over,
   };
 }
@@ -78,7 +85,7 @@ describe('Save.load', () => {
   it('migrates a v1 save and preserves progress', () => {
     store.set(SAVE_KEY, JSON.stringify(v1Save()));
     const d = Save.load();
-    expect(d.v).toBe(2);
+    expect(d.v).toBe(SAVE_VERSION);
     expect(d.gold).toBe(1234);
     expect(d.embers).toBe(7);
     expect(d.chars.kael!.level).toBe(5);
@@ -86,6 +93,20 @@ describe('Save.load', () => {
     expect(d.settings.reducedMotion).toBe(false);
     expect(d.settings.sfx).toBe(0.6);
     expect(d.chars.lyra!.unlocked).toBe(true); // missing chars are filled in
+    // v3: a veteran save skips the prologue and gains the new codex/stat fields
+    expect(d.story.prologue).toBe(true);
+    expect(d.codex.boons).toEqual({});
+    expect(d.stats.bestCombo).toBe(0);
+  });
+
+  it('records v3 run stats (combo, reactions, boons)', () => {
+    Save.load();
+    Save.recordRun(run({ bestCombo: 140, reactions: 9, boons: ['b_chain'], shrines: 2 }));
+    Save.recordRun(run({ bestCombo: 60, reactions: 1 }));
+    expect(Save.data.stats.bestCombo).toBe(140);
+    expect(Save.data.stats.reactions).toBe(10);
+    expect(Save.data.stats.shrines).toBe(3);
+    expect(Save.data.codex.boons.b_chain).toBe(true);
   });
 
   it('treats an unversioned save as v1', () => {

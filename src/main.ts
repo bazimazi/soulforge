@@ -24,17 +24,22 @@ function boot(): void {
 
   const fx = new FX();
   fx.shakeMul = settings.reducedMotion ? 0 : settings.shake;
+  fx.flashMul = settings.reducedMotion ? 0.25 : 1;
   fx.dmgEnabled = settings.dmgNumbers;
   const pref = (params.get('renderer') as BackendPreference | null) ?? 'auto';
   const renderer = new Renderer(canvas, fx, pref);
   renderer.quality = settings.quality || 1;
+  renderer.postEnabled = settings.postfx;
   renderer.resize();
   const input = new InputManager(window, canvas);
   const game = new Game(fx, input);
 
   // simulation → hosts
   game.events.on('sfx', (name, param) => audio.play(name, param));
-  game.events.on('runStart', (stage) => renderer.setStage(stage));
+  game.events.on('runStart', (stage) => {
+    renderer.setStage(stage);
+    renderer.snapCamera();
+  });
   game.events.on('discover', (kind, id) => Save.discover(kind, id));
 
   // hosts → simulation
@@ -62,6 +67,8 @@ function boot(): void {
 
   let errorShown = false;
   const loop = new FixedLoop({
+    // slow motion / hit-stop requested by the simulation through FX (boss kills, enrage, death)
+    timeScale: (realDt) => fx.stepWarp(realDt),
     update(dt) {
       try {
         game.update(dt);
@@ -73,6 +80,15 @@ function boot(): void {
       try {
         input.poll();
         if (game.state !== 'idle') UI.updateHud(game);
+        audio.setIntensity(
+          game.state === 'play'
+            ? game.boss && !game.boss.dead
+              ? game.boss.phase === 2
+                ? 1
+                : 0.7
+              : Math.min(0.5, game.enemies.length / 600)
+            : 0,
+        );
         renderer.render(game.state === 'idle' ? null : game, alpha, frameDt);
       } catch (err) {
         reportError(err);

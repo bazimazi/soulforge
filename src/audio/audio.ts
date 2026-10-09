@@ -29,6 +29,10 @@ const last: Record<string, number> = {};
 let musicOn = false;
 let musicNodes: AudioNode[] = [];
 let musicTimer: ReturnType<typeof setTimeout> | undefined;
+/** 0..1 combat intensity (bosses, big hordes): opens the pad filter and brings in the war drums. */
+let intensity = 0;
+let drumGain: GainNode | null = null;
+let padFilter: BiquadFilterNode | null = null;
 
 function voiceEnded(): void {
   voices = Math.max(0, voices - 1);
@@ -96,12 +100,16 @@ const SFX: Record<string, SfxFn> = {
   nova: (t) => { noise(t, 0.6, 0.25, null, { freq: 2000, slide: 100 }); osc('sine', 500, t, 0.5, 0.15, null, { slide: 50 }); },
   summon: (t) => { osc('triangle', 150, t, 0.4, 0.12, null, { slide: 450 }); noise(t, 0.3, 0.08, null, { freq: 1000 }); },
   pickup: (t) => { osc('sine', 1046, t, 0.12, 0.1, null, { slide: 2093 }); },
+  react: (t) => { osc('square', 520, t, 0.12, 0.07, null, { slide: 1560 }); noise(t, 0.22, 0.14, null, { type: 'bandpass', freq: 2400, slide: 600 }); osc('sine', 110, t, 0.25, 0.14, null, { slide: 50 }); },
+  shrine: (t) => { [196, 294, 392, 587, 784].forEach((f, i) => osc('sine', f, t + i * 0.06, 0.9, 0.08, null, { attack: 0.04 })); noise(t, 0.6, 0.06, null, { type: 'highpass', freq: 5000 }); },
+  combo: (t, p = 1) => { const f = 330 * Math.pow(1.26, p); osc('triangle', f, t, 0.16, 0.09); osc('triangle', f * 1.5, t + 0.07, 0.2, 0.08); },
+  narrate: (t) => { osc('sine', 220, t, 0.5, 0.035, null, { attack: 0.08, slide: 180 }); noise(t, 0.35, 0.02, null, { type: 'bandpass', freq: 900 }); },
 };
 
 /** Rare, meaningful sounds (UI, progression, bosses) that are never dropped by the voice cap. */
-const PRIORITY = new Set(['ui', 'uiback', 'buy', 'forge', 'levelup', 'chest', 'evolve', 'boss', 'death', 'revive']);
+const PRIORITY = new Set(['ui', 'uiback', 'buy', 'forge', 'levelup', 'chest', 'evolve', 'boss', 'death', 'revive', 'shrine', 'combo', 'narrate']);
 
-const THROTTLE: Record<string, number> = { hit: 0.04, kill: 0.05, gem: 0.03, shoot: 0.06, zap: 0.06, slash: 0.08, fire: 0.1, explode: 0.08, crit: 0.08, gold: 0.05, hurt: 0.15 };
+const THROTTLE: Record<string, number> = { react: 0.09, hit: 0.04, kill: 0.05, gem: 0.03, shoot: 0.06, zap: 0.06, slash: 0.08, fire: 0.1, explode: 0.08, crit: 0.08, gold: 0.05, hurt: 0.15 };
 
 export const audio = {
   /** Create the AudioContext (call from a user gesture). Safe to call repeatedly. */
@@ -138,6 +146,14 @@ export const audio = {
     musicVol = v;
     if (musicGain) musicGain.gain.value = v;
   },
+  /** Music intensity 0..1, eased in the audio thread (cheap to call every frame). */
+  setIntensity(v: number): void {
+    if (Math.abs(v - intensity) < 0.02 || !ctx) return;
+    intensity = v;
+    const t = ctx.currentTime;
+    drumGain?.gain.setTargetAtTime(0.0001 + v * v * 0.5, t, 0.8);
+    padFilter?.frequency.setTargetAtTime(320 + v * 900, t, 1.2);
+  },
 
   /** Play a named sound effect. Cheap no-op before init, when muted or while the context is suspended. */
   play(name: string, p?: number): void {
@@ -162,7 +178,7 @@ export const audio = {
     const chords = [[0, 3, 7, 10], [0, 3, 7, 12], [-2, 2, 5, 10], [-4, 0, 3, 7]];
     const nodes: AudioNode[] = [];
     // pad oscillators (detuned saws through lowpass)
-    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 320; lp.Q.value = 2;
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 320; lp.Q.value = 2; padFilter = lp;
     const lfo = c.createOscillator(); lfo.frequency.value = 0.07;
     const lfoG = c.createGain(); lfoG.gain.value = 160; lfo.connect(lfoG); lfoG.connect(lp.frequency); lfo.start();
     lp.connect(out);
@@ -179,8 +195,15 @@ export const audio = {
     // sub pulse
     const sub = c.createOscillator(); sub.type = 'sine'; sub.frequency.value = root;
     const subG = c.createGain(); subG.gain.value = 0; sub.connect(subG); subG.connect(out); sub.start();
-    nodes.push(sub, subG, lp, lfo, lfoG);
+    // war drums: filtered noise hits, silent until intensity rises
+    const dG = c.createGain(); dG.gain.value = 0.0001; dG.connect(out); drumGain = dG;
+    // a sparse bell melody over the pad (minor pentatonic, two octaves up)
+    const bellG = c.createGain(); bellG.gain.value = 0.5; bellG.connect(out);
+    nodes.push(sub, subG, lp, lfo, lfoG, dG, bellG);
     musicNodes = nodes;
+    const bell = (f: number, t: number): void => { const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = f; const g = c.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.05, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 2.4); o.connect(g); g.connect(bellG); o.start(t); o.stop(t + 2.5); };
+    const drum = (t: number, accent: number): void => { if (!noiseBuf) return; const s2 = c.createBufferSource(); s2.buffer = noiseBuf; const f = c.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 160; const g = c.createGain(); g.gain.setValueAtTime(accent, t); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35); s2.connect(f); f.connect(g); g.connect(dG); s2.start(t, Math.random()); s2.stop(t + 0.4); const o = c.createOscillator(); o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(40, t + 0.3); const og = c.createGain(); og.gain.setValueAtTime(accent * 0.8, t); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.32); o.connect(og); og.connect(dG); o.start(t); o.stop(t + 0.35); };
+    const SCALE = [0, 3, 5, 7, 10, 12, 15];
     let step = 0;
     const schedule = (): void => {
       if (!musicOn) return;
@@ -198,6 +221,10 @@ export const audio = {
         subG.gain.exponentialRampToValueAtTime(0.25, bt + 0.05);
         subG.gain.exponentialRampToValueAtTime(0.0001, bt + 0.5);
       }
+      // drums every half beat (always scheduled; the drum bus gain decides if you hear them)
+      for (let b = 0; b < 16; b++) drum(t + b * 0.5, b % 4 === 0 ? 0.9 : b % 2 === 0 ? 0.5 : 0.25);
+      // a few bell notes drifting over the chord
+      for (let n = 0; n < 4; n++) if (Math.random() < 0.7) bell(root * 8 * Math.pow(2, (chord[0]! + SCALE[Math.floor(Math.random() * SCALE.length)]!) / 12), t + n * 2 + Math.random() * 0.5);
       step++;
       musicTimer = setTimeout(schedule, 8000);
     };
@@ -213,5 +240,8 @@ export const audio = {
       } catch { /* already stopped */ }
     }
     musicNodes = [];
+    drumGain = null;
+    padFilter = null;
+    intensity = 0;
   },
 };

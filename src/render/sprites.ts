@@ -3,8 +3,11 @@ import { U } from '../core/util';
 import type { CharacterDef, EnemyColors, IconSpec, StagePalette } from '../game/types';
 
 type Ctx = CanvasRenderingContext2D;
-/** A sprite canvas that carries its draw origin (anchor point, in canvas pixels). */
-export type Sprite = HTMLCanvasElement & { ox: number; oy: number };
+/**
+ * A sprite canvas that carries its draw origin (anchor point, in canvas pixels) and its pixel density:
+ * `res` canvas pixels per world unit (the backends draw it at width / res).
+ */
+export type Sprite = HTMLCanvasElement & { ox: number; oy: number; res?: number };
 /** The parts of a character definition the sprite painter reads. */
 export type CharacterArt = Pick<CharacterDef, 'id' | 'colors' | 'head' | 'weaponArt'> & { longHair?: boolean };
 /** An icon glyph spec; `bg` optionally overrides the background tint. */
@@ -32,11 +35,35 @@ function cached<T extends HTMLCanvasElement | string>(key: string): T | undefine
 function ctx2d(c: HTMLCanvasElement): Ctx {
   return c.getContext('2d')!;
 }
-function withOrigin(c: HTMLCanvasElement, ox: number, oy: number): Sprite {
+function withOrigin(c: HTMLCanvasElement, ox: number, oy: number, res = 1): Sprite {
   const s = c as Sprite;
-  s.ox = ox;
-  s.oy = oy;
+  s.ox = ox * res;
+  s.oy = oy * res;
+  if (res !== 1) s.res = res;
   return s;
+}
+
+/**
+ * World sprites are baked at RES canvas pixels per world unit: the camera zooms in up to ~2× on
+ * Retina screens, and 1:1 bakes looked soft there. Pivots and sizes stay in world units.
+ */
+const RES = 2;
+/** A RES-scaled canvas of `w`×`h` world units, its context pre-scaled so drawing code stays in units. */
+function mkRes(w: number, h: number): [HTMLCanvasElement, Ctx] {
+  const c = mk(w * RES, h * RES), x = ctx2d(c);
+  x.scale(RES, RES);
+  return [c, x];
+}
+/** Wrap a sprite in a dark outline (silhouette stamped around it) so it reads against any ground. */
+function outlined(src: HTMLCanvasElement, px: number, color = 'rgba(8,5,12,0.9)'): HTMLCanvasElement {
+  const sil = mk(src.width, src.height), sx = ctx2d(sil);
+  sx.drawImage(src, 0, 0);
+  sx.globalCompositeOperation = 'source-in';
+  sx.fillStyle = color; sx.fillRect(0, 0, sil.width, sil.height);
+  const out = mk(src.width, src.height), o = ctx2d(out);
+  for (let i = 0; i < 8; i++) { const a = (i / 8) * U.TAU; o.drawImage(sil, Math.round(Math.cos(a) * px), Math.round(Math.sin(a) * px)); }
+  o.drawImage(src, 0, 0);
+  return out;
 }
 
 function mk(w: number, h: number): HTMLCanvasElement {
@@ -75,20 +102,21 @@ function light(r: number): HTMLCanvasElement {
 function orb(color: string, r: number, core = '#ffffff'): HTMLCanvasElement {
   const key = 'orb|' + color + '|' + r + '|' + core;
   const hit = cached<HTMLCanvasElement>(key); if (hit) return hit;
-  const R = r * 2.6, c = mk(R * 2, R * 2), x = ctx2d(c);
-  x.drawImage(glow(color, R), 0, 0);
+  const R = r * 2.6, [c, x] = mkRes(R * 2, R * 2);
+  x.drawImage(glow(color, R * RES), 0, 0, R * 2, R * 2);
   const g = x.createRadialGradient(R - r * 0.3, R - r * 0.3, 0, R, R, r);
   g.addColorStop(0, core); g.addColorStop(0.5, color); g.addColorStop(1, U.rgba(color, 0.7));
   x.fillStyle = g; x.beginPath(); x.arc(R, R, r, 0, U.TAU); x.fill();
-  cache.set(key, c);
-  return c;
+  const sp = withOrigin(c, R, R, RES);
+  cache.set(key, sp);
+  return sp;
 }
 /* elongated projectile (bolt/arrow/dagger) pointing +x */
 function bolt(color: string, len: number, wid: number, kind = 'bolt'): Sprite {
   const key = 'bolt|' + color + '|' + len + '|' + wid + '|' + kind;
   const hit = cached<Sprite>(key); if (hit) return hit;
   const pad = wid * 2.5, W = len + pad * 2, H = wid * 2 + pad * 2;
-  const c = mk(W, H), x = ctx2d(c);
+  const [c, x] = mkRes(W, H);
   const cx = W / 2, cy = H / 2;
   x.globalCompositeOperation = 'lighter';
   x.drawImage(glow(color, Math.max(len, wid) * 0.7), cx - Math.max(len, wid) * 0.7, cy - Math.max(len, wid) * 0.7);
@@ -118,7 +146,7 @@ function bolt(color: string, len: number, wid: number, kind = 'bolt'): Sprite {
     x.fillStyle = color; x.beginPath(); x.moveTo(len * 0.1, -wid * 1.6); x.quadraticCurveTo(len * 0.7, 0, len * 0.1, wid * 1.6); x.quadraticCurveTo(len * 0.3, 0, len * 0.1, -wid * 1.6); x.fill();
     x.fillStyle = '#fff8'; x.beginPath(); x.moveTo(len * 0.25, -wid * 1.2); x.quadraticCurveTo(len * 0.6, 0, len * 0.25, wid * 1.2); x.quadraticCurveTo(len * 0.4, 0, len * 0.25, -wid * 1.2); x.fill();
   }
-  const sp = withOrigin(c, cx, cy);
+  const sp = withOrigin(c, cx, cy, RES);
   cache.set(key, sp);
   return sp;
 }
@@ -150,8 +178,12 @@ function eyes(x: Ctx, cx: number, cy: number, dx: number, r: number, color: stri
 const helpers = { circle, poly, rgrad, eyes };
 
 /* ---------- character sprites ---------- */
-function character(def: CharacterArt, size = 72): HTMLCanvasElement {
-  const key = 'char|' + def.id + '|' + size;
+/**
+ * A champion, drawn in a 72-unit box (feet at y≈66). `size` is the canvas size in pixels; `step`
+ * picks a walk-cycle pose (0 standing, 1/2 alternate strides).
+ */
+function character(def: CharacterArt, size = 72, step = 0): HTMLCanvasElement {
+  const key = 'char|' + def.id + '|' + size + '|' + step;
   const hit = cached<HTMLCanvasElement>(key); if (hit) return hit;
   const c = mk(size, size), x = ctx2d(c);
   const col = def.colors, s = size / 72;
@@ -159,12 +191,25 @@ function character(def: CharacterArt, size = 72): HTMLCanvasElement {
   const cx = 36, base = 62;
   // aura glow
   x.globalAlpha = 0.5; x.drawImage(glow(col.accent, 30), cx - 30, 36 - 30); x.globalAlpha = 1;
+  // boots (stride offsets for the walk cycle) and arms behind the cloak
+  const lf = step === 1 ? -2.5 : step === 2 ? 1.5 : 0, rf = step === 2 ? -2.5 : step === 1 ? 1.5 : 0;
+  x.fillStyle = U.shade(col.secondary, -0.45);
+  x.beginPath(); x.ellipse(cx - 7, base + 2 + lf, 5, 3.4, 0, 0, U.TAU); x.fill();
+  x.beginPath(); x.ellipse(cx + 7, base + 2 + rf, 5, 3.4, 0, 0, U.TAU); x.fill();
+  x.strokeStyle = U.shade(col.primary, -0.25); x.lineWidth = 5; x.lineCap = 'round';
+  x.beginPath(); x.moveTo(cx - 12, 29); x.lineTo(cx - 17, 41 + rf * 0.6); x.moveTo(cx + 12, 29); x.lineTo(cx + 17, 41 + lf * 0.6); x.stroke();
+  circle(x, cx - 17, 42 + rf * 0.6, 2.6, col.skin || '#e9c9a8'); circle(x, cx + 17, 42 + lf * 0.6, 2.6, col.skin || '#e9c9a8');
   // cloak/body
   const bodyG = x.createLinearGradient(0, 24, 0, base);
   bodyG.addColorStop(0, U.shade(col.primary, 0.15)); bodyG.addColorStop(1, U.shade(col.primary, -0.35));
   x.beginPath(); x.moveTo(cx - 10, 26); x.quadraticCurveTo(cx - 20, 44, cx - 18, base);
   x.lineTo(cx + 18, base); x.quadraticCurveTo(cx + 20, 44, cx + 10, 26); x.closePath();
   x.fillStyle = bodyG; x.fill(); x.strokeStyle = 'rgba(0,0,0,0.5)'; x.lineWidth = 1.5; x.stroke();
+  // cloth folds and a rim of accent light down the right edge
+  x.strokeStyle = 'rgba(0,0,0,0.22)'; x.lineWidth = 1.2;
+  x.beginPath(); x.moveTo(cx - 6, 48); x.quadraticCurveTo(cx - 8, 56, cx - 9, base); x.moveTo(cx + 5, 48); x.quadraticCurveTo(cx + 7, 56, cx + 8, base); x.stroke();
+  x.strokeStyle = U.rgba(col.accent, 0.55); x.lineWidth = 1.4;
+  x.beginPath(); x.moveTo(cx + 10, 27); x.quadraticCurveTo(cx + 19.5, 44, cx + 17.5, base - 1); x.stroke();
   // belt / trim
   x.fillStyle = col.secondary; x.fillRect(cx - 14, 42, 28, 4);
   x.fillStyle = col.accent; x.fillRect(cx - 3, 41, 6, 6);
@@ -251,8 +296,17 @@ function character(def: CharacterArt, size = 72): HTMLCanvasElement {
   }
   x.shadowBlur = 0;
   x.restore();
-  cache.set(key, c);
-  return c;
+  const out = outlined(c, Math.max(1, Math.round(1.2 * s)));
+  cache.set(key, out);
+  return out;
+}
+/** In-world champion sprite: supersampled, pivot at the feet, with a walk-cycle `step`. */
+function hero(def: CharacterArt, step = 0): Sprite {
+  const key = 'hero|' + def.id + '|' + step;
+  const hit = cached<Sprite>(key); if (hit) return hit;
+  const sp = withOrigin(character(def, 72 * RES, step), 36, 62, RES);
+  cache.set(key, sp);
+  return sp;
 }
 
 /* ---------- enemy sprites ---------- */
@@ -427,7 +481,7 @@ function enemy(type: string, r: number, col: EnemyColors, tier = 0): Sprite {
   const key = 'en|' + type + '|' + r + '|' + col.body + '|' + col.eye + '|' + tier;
   const hit = cached<Sprite>(key); if (hit) return hit;
   const R = Math.ceil(r * 2.2 + 6);
-  const c = mk(R * 2, R * 2), x = ctx2d(c);
+  const [c0, x] = mkRes(R * 2, R * 2);
   x.translate(R, R);
   x.lineJoin = 'round';
   (ENEMY_DRAW[type] || ENEMY_DRAW.ghoul)(x, r, col);
@@ -441,7 +495,7 @@ function enemy(type: string, r: number, col: EnemyColors, tier = 0): Sprite {
     for (let i = 0; i < 3; i++) { const a = -Math.PI / 2 + (i - 1) * 0.5; circle(x, Math.cos(a) * (r * 1.25), Math.sin(a) * (r * 1.25) - r * 0.2, r * 0.12, col.eye); }
     x.shadowBlur = 0;
   }
-  const sp = withOrigin(c, R, R);
+  const sp = withOrigin(outlined(c0, Math.max(2, Math.round(r / 9))), R, R, RES);
   cache.set(key, sp);
   return sp;
 }
@@ -454,6 +508,7 @@ function flash(src: Sprite): Sprite {
   x.globalCompositeOperation = 'source-in';
   x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
   const sp = withOrigin(c, src.ox, src.oy);
+  sp.res = src.res;
   flashCache.set(src, sp);
   return sp;
 }
@@ -467,6 +522,7 @@ function tint(src: Sprite, color: string): Sprite {
   x.globalCompositeOperation = 'source-atop';
   x.fillStyle = color; x.fillRect(0, 0, c.width, c.height);
   const sp = withOrigin(c, src.ox, src.oy);
+  sp.res = src.res;
   byColor.set(color, sp);
   return sp;
 }
@@ -475,29 +531,29 @@ function tint(src: Sprite, color: string): Sprite {
 function gem(color: string, r: number): Sprite {
   const key = 'gem|' + color + '|' + r;
   const hit = cached<Sprite>(key); if (hit) return hit;
-  const R = r * 2.4, c = mk(R * 2, R * 2), x = ctx2d(c);
-  x.globalAlpha = 0.7; x.drawImage(glow(color, R), 0, 0); x.globalAlpha = 1;
+  const R = r * 2.4, [c, x] = mkRes(R * 2, R * 2);
+  x.globalAlpha = 0.7; x.drawImage(glow(color, R * RES), 0, 0, R * 2, R * 2); x.globalAlpha = 1;
   x.translate(R, R);
   const g = x.createLinearGradient(-r, -r, r, r); g.addColorStop(0, '#fff'); g.addColorStop(0.35, color); g.addColorStop(1, U.shade(color, -0.45));
   poly(x, [[0, -r * 1.3], [r * 0.9, -r * 0.2], [0, r * 1.3], [-r * 0.9, -r * 0.2]], g, 'rgba(255,255,255,0.6)', 1);
   x.fillStyle = 'rgba(255,255,255,0.5)'; poly(x, [[0, -r * 1.1], [r * 0.4, -r * 0.3], [-r * 0.4, -r * 0.3]], 'rgba(255,255,255,0.45)');
-  const sp = withOrigin(c, R, R); cache.set(key, sp); return sp;
+  const sp = withOrigin(c, R, R, RES); cache.set(key, sp); return sp;
 }
 function coin(r = 6): Sprite {
   const key = 'coin|' + r; const hit = cached<Sprite>(key); if (hit) return hit;
-  const R = r * 2.2, c = mk(R * 2, R * 2), x = ctx2d(c);
-  x.globalAlpha = 0.6; x.drawImage(glow('#ffcc44', R), 0, 0); x.globalAlpha = 1;
+  const R = r * 2.2, [c, x] = mkRes(R * 2, R * 2);
+  x.globalAlpha = 0.6; x.drawImage(glow('#ffcc44', R * RES), 0, 0, R * 2, R * 2); x.globalAlpha = 1;
   x.translate(R, R);
   circle(x, 0, 0, r, rgrad(x, 0, 0, r, [[0, '#fff3b0'], [0.5, '#f5c542'], [1, '#a5741a']]), '#6a4a10', 1.2);
   x.fillStyle = '#a5741a'; x.font = `bold ${r * 1.3}px serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('$', 0, 1);
-  const sp = withOrigin(c, R, R); cache.set(key, sp); return sp;
+  const sp = withOrigin(c, R, R, RES); cache.set(key, sp); return sp;
 }
 function pickup(kind: string): Sprite {
   const key = 'pk|' + kind; const hit = cached<Sprite>(key); if (hit) return hit;
-  const R = 26, c = mk(R * 2, R * 2), x = ctx2d(c);
+  const R = 26, [c, x] = mkRes(R * 2, R * 2);
   x.translate(R, R);
   const glowCol = { food: '#ff6b6b', magnet: '#4fd1ff', bomb: '#ffb347', clock: '#b28dff', chest: '#ffd700', material: '#a0e0ff', ember: '#ff8a3c', brazier: '#ff9a3c', bosschest: '#ff44aa' }[kind] || '#fff';
-  x.globalAlpha = 0.7; x.drawImage(glow(glowCol, R), -R, -R); x.globalAlpha = 1;
+  x.globalAlpha = 0.7; x.drawImage(glow(glowCol, R * RES), -R, -R, R * 2, R * 2); x.globalAlpha = 1;
   x.lineJoin = 'round';
   if (kind === 'food') {
     x.fillStyle = '#e8d8c0'; x.beginPath(); x.ellipse(-8, 6, 5, 3.5, 0.8, 0, U.TAU); x.fill(); x.beginPath(); x.ellipse(-9, -3, 3.5, 5, 0.8, 0, U.TAU); x.fill();
@@ -525,7 +581,7 @@ function pickup(kind: string): Sprite {
     x.fillStyle = '#3a3a44'; x.fillRect(-10, 2, 20, 12); x.fillStyle = '#55555f'; x.fillRect(-13, 0, 26, 4);
     x.shadowColor = '#ff9a3c'; x.shadowBlur = 14; poly(x, [[-7, 2], [-4, -8], [0, -3], [3, -14], [6, -4], [8, 2]], rgrad(x, 0, -4, 10, [[0, '#fff2b0'], [0.5, '#ff9a3c'], [1, '#c0300a']])); x.shadowBlur = 0;
   }
-  const sp = withOrigin(c, R, R); cache.set(key, sp); return sp;
+  const sp = withOrigin(c, R, R, RES); cache.set(key, sp); return sp;
 }
 
 /* ---------- props ---------- */
@@ -533,7 +589,7 @@ function prop(kind: string, seed: number, pal: PropPalette): Sprite {
   const key = 'prop|' + kind + '|' + seed + '|' + (pal.id || '');
   const hit = cached<Sprite>(key); if (hit) return hit;
   const rnd = U.mulberry32(seed * 7919 + 13);
-  const R = 40, c = mk(R * 2, R * 2 + 20), x = ctx2d(c); x.translate(R, R + 10);
+  const R = 40, [c0, x] = mkRes(R * 2, R * 2 + 20); x.translate(R, R + 10);
   x.lineJoin = 'round';
   const dark = pal.propDark || '#22202a', light = pal.propLight || '#5a5668';
   if (kind === 'rock') {
@@ -570,7 +626,37 @@ function prop(kind: string, seed: number, pal: PropPalette): Sprite {
     x.fillStyle = light; x.beginPath(); x.ellipse(0, 0, 14, 8, 0, 0, U.TAU); x.fill(); x.strokeStyle = 'rgba(0,0,0,0.5)'; x.stroke();
     x.strokeStyle = 'rgba(0,0,0,0.35)'; x.lineWidth = 1; for (let i = 1; i < 4; i++) { x.beginPath(); x.ellipse(0, 0, i * 4, i * 2.2, 0, 0, U.TAU); x.stroke(); }
   }
-  const sp = withOrigin(c, R, R + 10); cache.set(key, sp); return sp;
+  const sp = withOrigin(outlined(c0, 2, 'rgba(0,0,0,0.45)'), R, R + 10, RES); cache.set(key, sp); return sp;
+}
+
+/* ---------- shrines ---------- */
+const SHRINE_GLYPH: Record<string, string> = { blood: 'drop', fortune: 'chest', trial: 'spiral', haste: 'boot', life: 'heart', curse: 'skull' };
+/** A stone shrine: stepped plinth, obelisk and the kind's glyph glowing on its face. Pivot at the base. */
+function shrine(kind: string, color: string): Sprite {
+  const key = 'shrine|' + kind + '|' + color;
+  const hit = cached<Sprite>(key); if (hit) return hit;
+  const W = 96, H = 120, [c0, x] = mkRes(W, H);
+  x.translate(W / 2, H - 16);
+  x.lineJoin = 'round';
+  // plinth
+  x.fillStyle = '#26222e'; x.beginPath(); x.ellipse(0, 4, 40, 13, 0, 0, U.TAU); x.fill();
+  x.fillStyle = '#3a3546'; x.beginPath(); x.ellipse(0, 0, 36, 11, 0, 0, U.TAU); x.fill();
+  x.fillStyle = '#4a4458'; x.beginPath(); x.ellipse(0, -5, 26, 8, 0, 0, U.TAU); x.fill();
+  // obelisk
+  const g = x.createLinearGradient(-14, 0, 14, 0); g.addColorStop(0, '#2b2734'); g.addColorStop(0.45, '#5b546a'); g.addColorStop(1, '#221f2a');
+  poly(x, [[-14, -6], [-10, -70], [0, -82], [10, -70], [14, -6]], g, 'rgba(0,0,0,0.7)', 1.5);
+  // runes etched down the stone
+  x.strokeStyle = U.rgba(color, 0.55); x.lineWidth = 1.2; x.shadowColor = color; x.shadowBlur = 6;
+  for (let i = 0; i < 3; i++) { const y = -18 - i * 9; x.beginPath(); x.moveTo(-5, y); x.lineTo(0, y - 4); x.lineTo(5, y); x.stroke(); }
+  x.shadowBlur = 0;
+  // the glyph, set into the obelisk's face
+  x.save(); x.translate(0, -56); x.scale(0.42, 0.42);
+  x.globalAlpha = 0.8; x.drawImage(glow(color, 40), -40, -40); x.globalAlpha = 1;
+  (GLYPH[SHRINE_GLYPH[kind] || 'star'] || GLYPH.star)(x, color);
+  x.restore();
+  const sp = withOrigin(outlined(c0, 2), W / 2, H - 16, RES);
+  cache.set(key, sp);
+  return sp;
 }
 
 /* ---------- ground tile ---------- */
@@ -708,14 +794,14 @@ function portraitURL(def: CharacterArt, size = 144): string {
   const g = x.createRadialGradient(size / 2, size * 0.55, 4, size / 2, size / 2, size * 0.7);
   g.addColorStop(0, U.shade(def.colors.accent, -0.3)); g.addColorStop(1, '#0a0a12');
   x.fillStyle = g; x.fillRect(0, 0, size, size);
-  x.drawImage(character(def, 72), 0, 0, 72, 72, size * 0.1, size * 0.08, size * 0.8, size * 0.8);
+  x.drawImage(character(def, Math.round(size * 0.8)), size * 0.1, size * 0.08);
   const url = c.toDataURL();
   cache.set(key, url); return url;
 }
 
 const S = {
   cache, mk, helpers,
-  glow, light, orb, bolt, character, enemy, flash, tint,
-  gem, coin, pickup, prop, groundTile, icon, iconURL, portraitURL,
+  glow, light, orb, bolt, character, hero, enemy, flash, tint,
+  gem, coin, pickup, prop, shrine, groundTile, icon, iconURL, portraitURL,
 };
 export const Sprites = S;

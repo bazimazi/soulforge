@@ -9,9 +9,15 @@
  * starts when the blend mode, texture page, view transform or render target changes.
  *
  * Colours are premultiplied end-to-end (textures uploaded premultiplied, shader outputs premultiplied).
+ *
+ * Post-processing: when a {@link PostFX} is set for the frame, the 'screen' target is an offscreen
+ * scene framebuffer instead of the canvas. After replay, `end()` runs a bloom chain — soft-knee bright
+ * pass at half resolution, dual-filter (Kawase) downsamples to 1/32, tent upsamples blended back up —
+ * and one final pass to the canvas that adds the bloom and applies exposure, contrast, saturation, tint
+ * wash, chromatic aberration and film grain. Without a PostFX the frame renders straight to the canvas.
  */
 import { TextureAtlas } from './atlas';
-import { parseColor, type Backend, type BlendMode, type ImageOpts, type Img, type RenderStats } from './backend';
+import { parseColor, type Backend, type BlendMode, type ImageOpts, type Img, type PostFX, type RenderStats } from './backend';
 import { bakeFont, GLYPH_BASE, type GlyphFont } from './glyphs';
 
 /* Shape ids — keep in sync with the fragment shader. */
@@ -146,7 +152,116 @@ in vec2 v_uv;
 out vec4 o;
 void main() { o = texture(u_tex, v_uv); }`;
 
+/*
+ * Post-processing passes (all share COMPOSITE_VS). The scene buffer is cleared opaque and blended with
+ * premultiplied colours, so its rgb already is the final premultiplied-over-opaque colour: the passes
+ * work on rgb directly and never un-premultiply.
+ */
+
+/** Bright pass: 4 bilinear taps (a 4×4 box, which tames sub-pixel sparkle) then a soft-knee threshold. */
+const BRIGHT_FS = `#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec2 u_texel;   // 1 / source size
+uniform vec3 u_curve;   // threshold, knee, 0.25 / knee
+in vec2 v_uv;
+out vec4 o;
+void main() {
+  vec4 d = u_texel.xyxy * vec4(-1.0, -1.0, 1.0, 1.0);
+  vec3 c = (texture(u_tex, v_uv + d.xy).rgb + texture(u_tex, v_uv + d.zy).rgb
+          + texture(u_tex, v_uv + d.xw).rgb + texture(u_tex, v_uv + d.zw).rgb) * 0.25;
+  float br = max(c.r, max(c.g, c.b));
+  float soft = clamp(br - u_curve.x + u_curve.y, 0.0, 2.0 * u_curve.y);
+  soft = soft * soft * u_curve.z;
+  o = vec4(c * max(soft, br - u_curve.x) / max(br, 1e-4), 1.0);
+}`;
+
+/** Dual-filter downsample: centre ×4 plus four diagonal bilinear taps (a 4×4 footprint) / 8. */
+const DOWN_FS = `#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec2 u_texel;   // 1 / source size
+in vec2 v_uv;
+out vec4 o;
+void main() {
+  vec2 h = u_texel;
+  vec3 c = texture(u_tex, v_uv).rgb * 4.0
+         + texture(u_tex, v_uv - h).rgb + texture(u_tex, v_uv + h).rgb
+         + texture(u_tex, v_uv + vec2(h.x, -h.y)).rgb + texture(u_tex, v_uv - vec2(h.x, -h.y)).rgb;
+  o = vec4(c * 0.125, 1.0);
+}`;
+
+/** Dual-filter upsample: an 8-tap tent around the destination pixel. */
+const UP_FS = `#version 300 es
+precision mediump float;
+uniform sampler2D u_tex;
+uniform vec2 u_texel;   // 1 / source (smaller level) size
+in vec2 v_uv;
+out vec4 o;
+void main() {
+  vec2 h = u_texel;
+  vec3 c = texture(u_tex, v_uv + vec2(-2.0 * h.x, 0.0)).rgb + texture(u_tex, v_uv + vec2(2.0 * h.x, 0.0)).rgb
+         + texture(u_tex, v_uv + vec2(0.0, -2.0 * h.y)).rgb + texture(u_tex, v_uv + vec2(0.0, 2.0 * h.y)).rgb
+         + (texture(u_tex, v_uv + h).rgb + texture(u_tex, v_uv - h).rgb
+          + texture(u_tex, v_uv + vec2(h.x, -h.y)).rgb + texture(u_tex, v_uv - vec2(h.x, -h.y)).rgb) * 2.0;
+  o = vec4(c / 12.0, 1.0);
+}`;
+
+/** Final pass to the canvas: aberration, bloom, grading, tint wash, grain. Writes alpha 1 (opaque canvas). */
+const FINAL_FS = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;    // scene
+uniform sampler2D u_bloom;
+uniform vec2 u_res;         // canvas size in device pixels
+uniform float u_bloomAmt;
+uniform float u_aberration; // device pixels of R/B split at the middle of a screen edge
+uniform vec3 u_grade;       // exposure, contrast, saturation
+uniform vec4 u_tint;        // rgb, amount
+uniform vec2 u_grain;       // amount, per-frame seed
+in vec2 v_uv;
+out vec4 o;
+float hash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+void main() {
+  vec3 col;
+  if (u_aberration > 0.0) {
+    // radial split growing quadratically from the centre: |off| = u_aberration px at an edge midpoint
+    vec2 d = v_uv - 0.5;
+    vec2 off = d * length(d) * 4.0 * u_aberration / u_res;
+    col = vec3(texture(u_tex, v_uv - off).r, texture(u_tex, v_uv).g, texture(u_tex, v_uv + off).b);
+  } else {
+    col = texture(u_tex, v_uv).rgb;
+  }
+  col += texture(u_bloom, v_uv).rgb * u_bloomAmt;
+  col *= u_grade.x;
+  col = (col - 0.5) * u_grade.y + 0.5;
+  col = mix(vec3(dot(col, vec3(0.2126, 0.7152, 0.0722))), col, u_grade.z);
+  col = mix(col, u_tint.rgb, u_tint.a);
+  col += (hash(gl_FragCoord.xy + u_grain.y) - 0.5) * u_grain.x;
+  o = vec4(clamp(col, 0.0, 1.0), 1.0);
+}`;
+
+/** Bloom chain depth: levels at 1/2 … 1/32 of the canvas. */
+const BLOOM_LEVELS = 5;
+/**
+ * Upsampling lerps each smaller level into the next larger one by this weight (rather than adding), so the
+ * chain stays a weighted average that cannot clip in RGBA8; larger = wider, softer halo.
+ */
+const BLOOM_SPREAD = 0.65;
+/** Brings the averaged chain back to a useful brightness so `bloom: 1` reads as a clear glow. */
+const BLOOM_GAIN = 3;
+
 type Target = 'screen' | 'light';
+/** An offscreen colour target: a texture with its framebuffer. */
+interface RenderTarget {
+  tex: WebGLTexture;
+  fbo: WebGLFramebuffer;
+  w: number;
+  h: number;
+}
 interface Batch {
   kind: 'draw';
   start: number;
@@ -175,6 +290,46 @@ function compile(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgr
   return p;
 }
 
+function uniforms<K extends string>(gl: WebGL2RenderingContext, p: WebGLProgram, names: readonly K[]): Record<K, WebGLUniformLocation> {
+  const u = {} as Record<K, WebGLUniformLocation>;
+  for (const n of names) u[n] = gl.getUniformLocation(p, n)!;
+  return u;
+}
+
+/** Linear-filtered, edge-clamped texture of `format` with a framebuffer; returns with nothing bound. */
+function createTarget(gl: WebGL2RenderingContext, w: number, h: number, format: number): RenderTarget {
+  const tex = gl.createTexture()!;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texStorage2D(gl.TEXTURE_2D, 1, format, w, h);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  const fbo = gl.createFramebuffer()!;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { tex, fbo, w, h };
+}
+
+function deleteTarget(gl: WebGL2RenderingContext, t: RenderTarget): void {
+  gl.deleteTexture(t.tex);
+  gl.deleteFramebuffer(t.fbo);
+}
+
+function isComplete(gl: WebGL2RenderingContext, t: RenderTarget): boolean {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return ok;
+}
+
+/** True when a PostFX would leave the image unchanged, so the frame can skip the scene buffer entirely. */
+function isNeutral(p: PostFX): boolean {
+  return p.bloom <= 0 && p.aberration <= 0 && p.saturation === 1 && p.contrast === 1 && p.exposure === 1 && p.tintA <= 0 && p.grain <= 0;
+}
+
 export class WebGL2Backend implements Backend {
   readonly kind = 'webgl2' as const;
   width = 1;
@@ -190,10 +345,23 @@ export class WebGL2Backend implements Backend {
   private inst!: WebGLBuffer;
   private atlas!: TextureAtlas;
   private u!: { view0: WebGLUniformLocation; view1: WebGLUniformLocation; res: WebGLUniformLocation; tex: WebGLUniformLocation };
-  private lightFbo: WebGLFramebuffer | null = null;
-  private lightTex: WebGLTexture | null = null;
-  private lightW = 0;
-  private lightH = 0;
+  private lightRT: RenderTarget | null = null;
+  // post-processing
+  private brightProg!: WebGLProgram;
+  private downProg!: WebGLProgram;
+  private upProg!: WebGLProgram;
+  private finalProg!: WebGLProgram;
+  private uBright!: Record<'u_texel' | 'u_curve', WebGLUniformLocation>;
+  private uDown!: Record<'u_texel', WebGLUniformLocation>;
+  private uUp!: Record<'u_texel', WebGLUniformLocation>;
+  private uFinal!: Record<'u_res' | 'u_bloomAmt' | 'u_aberration' | 'u_grade' | 'u_tint' | 'u_grain', WebGLUniformLocation>;
+  /** RGBA16F when the GPU can render to it (smoother dim bloom), else RGBA8. */
+  private bloomFormat = 0;
+  private sceneRT: RenderTarget | null = null;
+  private bloomRTs: RenderTarget[] = [];
+  /** Framebuffer behind the 'screen' target for the frame being replayed (null = the canvas). */
+  private screenFbo: WebGLFramebuffer | null = null;
+  private post: PostFX | null = null;
   private patterns = new WeakMap<HTMLCanvasElement, WebGLTexture>();
   private fonts: { normal: GlyphFont; heavy: GlyphFont } | null = null;
   private lost = false;
@@ -239,7 +407,8 @@ export class WebGL2Backend implements Backend {
       this.lost = true;
       this.atlas.reset(true);
       this.patterns = new WeakMap();
-      this.lightFbo = this.lightTex = null;
+      this.lightRT = this.sceneRT = this.screenFbo = null;
+      this.bloomRTs = [];
       this.fonts = null;
     });
     canvas.addEventListener('webglcontextrestored', () => {
@@ -252,6 +421,19 @@ export class WebGL2Backend implements Backend {
     const gl = this.gl;
     this.prog = compile(gl, VS, FS);
     this.compProg = compile(gl, COMPOSITE_VS, COMPOSITE_FS);
+    this.brightProg = compile(gl, COMPOSITE_VS, BRIGHT_FS);
+    this.downProg = compile(gl, COMPOSITE_VS, DOWN_FS);
+    this.upProg = compile(gl, COMPOSITE_VS, UP_FS);
+    this.finalProg = compile(gl, COMPOSITE_VS, FINAL_FS);
+    this.uBright = uniforms(gl, this.brightProg, ['u_texel', 'u_curve']);
+    this.uDown = uniforms(gl, this.downProg, ['u_texel']);
+    this.uUp = uniforms(gl, this.upProg, ['u_texel']);
+    this.uFinal = uniforms(gl, this.finalProg, ['u_res', 'u_bloomAmt', 'u_aberration', 'u_grade', 'u_tint', 'u_grain']);
+    // samplers default to unit 0; only the final pass reads a second texture
+    gl.useProgram(this.finalProg);
+    gl.uniform1i(gl.getUniformLocation(this.finalProg, 'u_bloom'), 1);
+    gl.useProgram(null);
+    this.bloomFormat = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float') ? gl.RGBA16F : gl.RGBA8;
     this.u = {
       view0: gl.getUniformLocation(this.prog, 'u_view0')!,
       view1: gl.getUniformLocation(this.prog, 'u_view1')!,
@@ -289,7 +471,7 @@ export class WebGL2Backend implements Backend {
   resize(width: number, height: number): void {
     this.width = Math.max(1, width);
     this.height = Math.max(1, height);
-    this.lightW = 0; // force light map reallocation
+    // offscreen targets compare their size with width/height when bound and reallocate lazily
   }
 
   /* ---------------------------- frame recording ---------------------------- */
@@ -303,6 +485,7 @@ export class WebGL2Backend implements Backend {
     this.blend = 'normal';
     this.target = 'screen';
     this.tex = null;
+    this.post = null;
     this.setView(1, 0, 0, 1, 0, 0);
     const c = parseColor(clear);
     this.cmds.push({ kind: 'clear', target: 'screen', r: c[0], g: c[1], b: c[2], a: 1 });
@@ -315,6 +498,10 @@ export class WebGL2Backend implements Backend {
     this.viewIdx = v.length / 6;
     v.push(a, b, c, d, e, f);
     this.batch = null;
+  }
+
+  setPost(p: PostFX | null): void {
+    this.post = p;
   }
 
   setBlend(mode: BlendMode): void {
@@ -404,11 +591,14 @@ export class WebGL2Backend implements Backend {
     if (alpha <= 0 || this.lost) return;
     const reg = this.atlas.region(img);
     const iw = img.width,
-      ih = img.height;
+      ih = img.height,
+      res = img.res ?? 1;
     let sx = o.sx ?? 1,
       sy = o.sy ?? sx;
-    if (o.w != null) sx *= o.w / iw;
-    if (o.h != null) sy *= o.h / ih;
+    // Explicit w/h are view-space sizes and win; otherwise the canvas holds `res` pixels per unit.
+    // The pivot stays in canvas pixels: it is scaled by sx/sy below together with the extents.
+    sx *= o.w != null ? o.w / iw : 1 / res;
+    sy *= o.h != null ? o.h / ih : 1 / res;
     const ox = o.ox ?? img.ox ?? iw / 2,
       oy = o.oy ?? img.oy ?? ih / 2;
     const off = this.slot(reg.tex),
@@ -659,26 +849,40 @@ export class WebGL2Backend implements Backend {
 
   /* --------------------------------- submit --------------------------------- */
 
-  private ensureLightTarget(): void {
-    const gl = this.gl;
+  private ensureLightTarget(): RenderTarget {
     const w = Math.max(1, Math.ceil(this.width * this.lightScale)),
       h = Math.max(1, Math.ceil(this.height * this.lightScale));
-    if (this.lightFbo && w === this.lightW && h === this.lightH) return;
-    if (this.lightTex) gl.deleteTexture(this.lightTex);
-    if (this.lightFbo) gl.deleteFramebuffer(this.lightFbo);
-    this.lightTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, this.lightTex);
-    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, w, h);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    this.lightFbo = gl.createFramebuffer()!;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.lightFbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.lightTex, 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    this.lightW = w;
-    this.lightH = h;
+    const t = this.lightRT;
+    if (t && t.w === w && t.h === h) return t;
+    if (t) deleteTarget(this.gl, t);
+    return (this.lightRT = createTarget(this.gl, w, h, this.gl.RGBA8));
+  }
+
+  /**
+   * Scene buffer (canvas size, RGBA8) plus the bloom chain (1/2 … 1/32, half float when renderable);
+   * reallocated only when the canvas size changed.
+   */
+  private ensurePostTargets(): RenderTarget {
+    const gl = this.gl,
+      w = this.width,
+      h = this.height;
+    const scene = this.sceneRT;
+    if (scene && scene.w === w && scene.h === h) return scene;
+    if (scene) deleteTarget(gl, scene);
+    for (const t of this.bloomRTs) deleteTarget(gl, t);
+    this.bloomRTs = [];
+    for (let i = 1; i <= BLOOM_LEVELS; i++) {
+      const t = createTarget(gl, Math.max(1, w >> i), Math.max(1, h >> i), this.bloomFormat);
+      if (i === 1 && this.bloomFormat !== gl.RGBA8 && !isComplete(gl, t)) {
+        // the extension promised a renderable float format but the driver disagrees: use RGBA8 from now on
+        deleteTarget(gl, t);
+        this.bloomFormat = gl.RGBA8;
+        i--;
+        continue;
+      }
+      this.bloomRTs.push(t);
+    }
+    return (this.sceneRT = createTarget(gl, w, h, gl.RGBA8));
   }
 
   /** Switch render target. Unbinds textures: the light map must never be sampled while it's the target. */
@@ -686,11 +890,11 @@ export class WebGL2Backend implements Backend {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, null);
     if (t === 'light') {
-      this.ensureLightTarget();
-      gl.bindFramebuffer(gl.FRAMEBUFFER, this.lightFbo);
-      gl.viewport(0, 0, this.lightW, this.lightH);
+      const l = this.ensureLightTarget();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, l.fbo);
+      gl.viewport(0, 0, l.w, l.h);
     } else {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.screenFbo);
       gl.viewport(0, 0, this.width, this.height);
     }
   }
@@ -707,6 +911,8 @@ export class WebGL2Backend implements Backend {
     this.stats.drawCalls = 0;
     this.stats.instances = this.n;
     if (this.lost || gl.isContextLost()) return;
+    const post = this.post && !isNeutral(this.post) ? this.post : null;
+    this.screenFbo = post ? this.ensurePostTargets().fbo : null;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.inst);
     gl.bufferData(gl.ARRAY_BUFFER, this.data.subarray(0, this.n * STRIDE), gl.STREAM_DRAW);
     gl.useProgram(this.prog);
@@ -733,7 +939,7 @@ export class WebGL2Backend implements Backend {
         curTarget = 'screen';
         gl.useProgram(this.compProg);
         gl.bindVertexArray(this.compVao);
-        gl.bindTexture(gl.TEXTURE_2D, this.lightTex);
+        gl.bindTexture(gl.TEXTURE_2D, this.lightRT?.tex ?? null);
         this.applyBlend('normal');
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.bindTexture(gl.TEXTURE_2D, null);
@@ -772,6 +978,72 @@ export class WebGL2Backend implements Backend {
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, c.count);
       this.stats.drawCalls++;
     }
+    if (post) this.postProcess(post);
     gl.bindVertexArray(null);
+  }
+
+  /* ------------------------------ post-processing ----------------------------- */
+
+  /** Full-screen pass of the current program from `src` into `dst`; `texel` (a `u_texel`) gets 1 / src size. */
+  private blit(src: RenderTarget, dst: RenderTarget, texel: WebGLUniformLocation): void {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, dst.w, dst.h);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform2f(texel, 1 / src.w, 1 / src.h);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.stats.drawCalls++;
+  }
+
+  /** Bloom chain from the scene buffer, then the final graded composite onto the canvas. */
+  private postProcess(p: PostFX): void {
+    const gl = this.gl,
+      scene = this.sceneRT!,
+      rts = this.bloomRTs,
+      bloom = p.bloom > 0;
+    gl.bindVertexArray(this.compVao);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.disable(gl.BLEND);
+    if (bloom) {
+      const t = Math.max(0, p.threshold),
+        knee = Math.max(t * 0.5, 1e-3);
+      gl.useProgram(this.brightProg);
+      gl.uniform3f(this.uBright.u_curve, t, knee, 0.25 / knee);
+      this.blit(scene, rts[0]!, this.uBright.u_texel);
+      gl.useProgram(this.downProg);
+      for (let i = 1; i < rts.length; i++) this.blit(rts[i - 1]!, rts[i]!, this.uDown.u_texel);
+      // walk back up, lerping each blurred smaller level into the larger one: dst = s·up + (1 − s)·dst
+      gl.enable(gl.BLEND);
+      gl.blendColor(0, 0, 0, BLOOM_SPREAD);
+      gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
+      gl.useProgram(this.upProg);
+      for (let i = rts.length - 1; i > 0; i--) this.blit(rts[i]!, rts[i - 1]!, this.uUp.u_texel);
+      gl.disable(gl.BLEND);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.width, this.height);
+    gl.useProgram(this.finalProg);
+    const u = this.uFinal,
+      tint = parseColor(p.tint);
+    gl.uniform2f(u.u_res, this.width, this.height);
+    gl.uniform1f(u.u_bloomAmt, bloom ? p.bloom * BLOOM_GAIN : 0);
+    gl.uniform1f(u.u_aberration, Math.max(0, p.aberration));
+    gl.uniform3f(u.u_grade, p.exposure, p.contrast, p.saturation);
+    gl.uniform4f(u.u_tint, tint[0], tint[1], tint[2], Math.min(1, Math.max(0, p.tintA * tint[3])));
+    // grain re-rolls at 24 Hz; the seed wraps so the hash input stays small and precise
+    gl.uniform2f(u.u_grain, Math.max(0, p.grain), (Math.floor(p.time * 24) % 64) * 17);
+    // without bloom the sampler still needs a complete texture: the scene, weighted by 0
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, bloom ? rts[0]!.tex : scene.tex);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, scene.tex);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    this.stats.drawCalls++;
+    // leave no post texture bound: next frame renders into them
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, null);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.enable(gl.BLEND);
   }
 }

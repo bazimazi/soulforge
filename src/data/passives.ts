@@ -55,6 +55,9 @@ export const STAT_INFO: Record<string, StatInfo> = {
   chestLuck: { name: 'Chest Bounty', fmt: (v) => '+' + Math.round(v * 100) + '%' },
   slowPower: { name: 'Slow Power', fmt: (v) => '+' + Math.round(v * 100) + '%' },
   execute: { name: 'Execute Threshold', fmt: (v) => '+' + Math.round(v * 100) + '%' },
+  reactDmg: { name: 'Reaction Damage', fmt: (v) => '+' + Math.round(v * 100) + '%' },
+  sigDmg: { name: 'Signature Damage', fmt: (v) => '+' + Math.round(v * 100) + '%' },
+  maxHpPct: { name: 'Max Health', fmt: (v) => (v < 0 ? '-' : '+') + Math.round(Math.abs(v) * 100) + '%' },
 };
 const P = (v: number): string => { const a = Math.abs(v * 100); return (a > 0 && a < 1 ? (v * 100).toFixed(1) : Math.round(v * 100)) + '%'; };
 for (const k in STAT_INFO) { const f = STAT_INFO[k]!.fmt; STAT_INFO[k]!.fmt = (v: number) => { const out = f(v); return /^[+-]\d+%$/.test(out) ? out[0] + P(Math.abs(v)) : out; }; }
@@ -62,7 +65,7 @@ export const statName = (k: string): string => (STAT_INFO[k] ? STAT_INFO[k].name
 export const statFmt = (k: string, v: number): string => (STAT_INFO[k] ? STAT_INFO[k].fmt(v) : String(v));
 
 export const PASSIVES: PassiveDef[] = [
-  { id: 'vitality', name: 'Vitality Core', icon: { g: 'heart', c: '#ff5c7a' }, max: 5, per: { maxHp: 0.12 }, desc: 'Max Health +12% per level.' },
+  { id: 'vitality', name: 'Vitality Core', icon: { g: 'heart', c: '#ff5c7a' }, max: 5, per: { maxHpPct: 0.12 }, desc: 'Max Health +12% per level.' },
   { id: 'plate', name: 'Iron Plate', icon: { g: 'shield', c: '#9fb2c8' }, max: 5, per: { armor: 1 }, desc: 'Armor +1 per level (flat damage reduction).' },
   { id: 'boots', name: 'Swift Boots', icon: { g: 'boot', c: '#6ee7b7' }, max: 5, per: { speed: 0.08 }, desc: 'Move Speed +8% per level.' },
   { id: 'power', name: 'Power Gem', icon: { g: 'gem', c: '#ff7043' }, max: 5, per: { might: 0.08 }, desc: 'Might (all damage) +8% per level.' },

@@ -1,8 +1,9 @@
 # SOULFORGE: Endless Night
 
 A browser survivors-like (Vampire Survivors lineage) with a heavy meta-progression layer — 12 characters,
-30+ weapons with evolutions, talent trees, a crafting forge and five biomes. Written in strict TypeScript,
-rendered with a batched **WebGL2** renderer (Canvas2D fallback), installable and playable offline as a PWA.
+31 weapons with evolutions, elemental reactions, resonance, boons, shrines, a narrated story, talent trees, a
+crafting forge and five biomes. Written in strict TypeScript, rendered with a batched **WebGL2** renderer with
+bloom and colour grading (Canvas2D fallback), installable and playable offline as a PWA.
 
 ```bash
 npm install
@@ -26,6 +27,27 @@ Touch: left side of the screen is a virtual stick, right side taps the ability.
 - Level up to choose weapons (max 6, 8 levels each) and passives (max 6, 5 levels). A max-level weapon + its paired passive evolves when you open a chest.
 - Each character starts with a **signature weapon** nobody else can use, a **trait** (permanent mechanic), an **active ability** on Space, and a **resource** where relevant (Static, Souls, Flow, Blood…).
 
+## Run systems
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the design intent.
+
+- **Elemental reactions** — burn + chill = _Thermal Shock_, burn + shock = _Overload_, chill + shock =
+  _Superconduct_ (Brittle: +30% damage taken). Lightning weapons shock everything they hit.
+- **Resonance** — 2 or 3 weapons sharing a tag (fire, ice, lightning, holy, magic, physical, shadow, poison,
+  summon) awaken bonuses; tier 3 changes a mechanic.
+- **Boons** — every fallen Herald offers one of three run-long boons (18 in all).
+- **Elite affixes** — Swift, Warded, Vampiric, Frenzied, Molten, Brood, Colossal, Arcane, Necrotic, Phasing.
+- **Boss phases** — Heralds enrage at half health and add barrage, cross-stream and hazard-pool attacks.
+- **Shrines** — stand inside to channel: Altar of Blood, Fortune, Soul Well trials, Quickening, Font of Life,
+  Cursed Idol.
+- **Kill streaks** — Frenzy → Apocalypse tiers grant Might and Growth; getting hit cuts the streak.
+
+## Story
+
+The Keeper of the Soulforge narrates: a prologue on first launch, stage title cards, boss introductions with
+epithets, voiced lines for every champion and Herald, an epitaph when you fall, and **The Long Night** — a
+14-chapter main story in the Codex that unlocks as you push deeper.
+
 ## Characters (12)
 
 Kael the Ember Knight · Lyra the Stormcaller · Talon the Beast Hunter · Seraphine the Dawn Oracle · Vex the Shadow Blade · Morrow the Grave Warden · Isolde the Frost Queen · Grom the Iron Bulwark · Nyx the Void Witch · Rix the Clockwork Tinkerer · Vesper the Blood Countess · Zephyr the Wind Monk.
@@ -36,7 +58,9 @@ Nine of them are unlocked through milestones (survive X minutes, kill totals, bo
 
 - **Character XP & levels** — every run feeds the character; each level grants a talent point (no cap).
 - **Talents** — per-character tree with 3 flavoured branches × 4 tiers + a keystone that changes a mechanic (e.g. Kael's _Wildfire_, Vex's _Lethality_, Nyx's _Null Field_). Tier gating by points in that branch; free respec. **Paragon** ranks are endless.
-- **Codex → Chronicles** — 5 lore chapters per character; chapters II/IV are _Awakenings_ (new mechanics: second dash charge, drone swarm, death marks…), chapter V is an _Ascension_.
+- **Codex → The Long Night** — the main story. **Codex → Lexicon** — reactions, resonance, boons, shrines and
+  affixes.
+- **Codex → Champions** — 5 lore chapters per character; chapters II/IV are _Awakenings_ (new mechanics: second dash charge, drone swarm, death marks…), chapter V is an _Ascension_.
 - **Codex → Bestiary / Armory / Relics / Milestones** — kill tiers grant global Might, weapon mastery grants permanent weapon damage, milestones pay gold and Soul Embers.
 - **Forge**
   - _Anvil_: 38 permanent stat upgrades in 4 tiers; the Mastery tier has infinite ranks.
@@ -80,7 +104,8 @@ src/
   game/              headless, deterministic simulation (no DOM)
     game.ts          the run: spawning, combat, weapons, pickups, level-ups
     types.ts         the shared type contract for all content
-  data/              content: characters, weapons, enemies, passives, forge, codex
+  data/              content: characters, weapons, enemies, passives, forge, codex,
+                     synergy (resonance/reactions/streaks), boons, shrines, story
   meta/save.ts       versioned save (migrations, debounced writes, backups) + meta progression
   render/
     renderer.ts      world renderer (camera, layers, lighting, FX, post)
@@ -88,6 +113,7 @@ src/
     sprites.ts       procedural art, generated at load
     gfx/             backends: webgl2.ts (instanced uber-shader + atlas), canvas2d.ts (fallback)
   ui/ui.ts           DOM menus, HUD and modals
+  ui/narrator.ts     voices the simulation's story beats (subtitles, title cards, boss banners)
   audio/audio.ts     procedural WebAudio SFX and music
 tests/               Vitest (Node): core, save, simulation
 e2e/                 Playwright smoke tests

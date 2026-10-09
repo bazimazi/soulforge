@@ -16,7 +16,8 @@ It's written for engineers changing the engine, adding content, or debugging.
 **The simulation (`src/game`, `src/data`, `src/core`) is headless.** It never imports the DOM, UI, audio or
 renderer — ESLint enforces this with `no-restricted-imports`. Everything the outside world needs to know is
 emitted through `game.events` (`GameEvents` in `src/game/types.ts`): `sfx`, `notice`, `levelUp`, `chest`,
-`gameOver`, `runStart`, `discover`. Input arrives through the `InputSource` interface.
+`gameOver`, `runStart`, `discover`, `boon` and `story` (narrative beats that `ui/narrator.ts` voices). Input
+arrives through the `InputSource` interface.
 
 That one rule buys three things:
 
@@ -84,11 +85,23 @@ rect, text, pattern, light).
 - Lighting renders into a quarter-resolution framebuffer. Ambient darkness is cleared in, lights erase it with
   `blendFunc(ZERO, ONE_MINUS_SRC_ALPHA)`, and the result is composited over the scene.
 - Colours are premultiplied end to end. Context loss is handled: resources rebuild lazily on restore.
+- Post-processing (`setPost(PostFX)`, called once per frame): the scene renders into an offscreen buffer, then a
+  half-resolution bright pass, a 5-level dual-filter bloom chain and one final pass apply bloom, exposure,
+  contrast, saturation, a colour wash, chromatic aberration and grain. `setPost(null)` (or identity values)
+  renders straight to the canvas at no extra cost.
+- Sprites may carry `res` (canvas pixels per world unit). The sprite factory bakes world sprites at `res = 2`
+  with an outline so they stay crisp at Retina zoom; the backends draw them at `width / res`.
 
 **Canvas2D backend** (`gfx/canvas2d.ts`) implements the same interface. It is the fallback when WebGL2 is
 unavailable, and `?renderer=canvas2d` forces it.
 
 `npm run bench` measures both against a large horde in GPU-accelerated Chrome.
+
+### Slow motion
+
+The simulation asks for slow motion or hit-stop with `fx.timeWarp(scale, seconds)`. `main.ts` passes
+`fx.stepWarp` as the loop's `timeScale`, so a slowed frame simply runs fewer fixed steps. Step size never
+changes, which keeps runs deterministic.
 
 ## Content model
 
@@ -100,6 +113,9 @@ levels, evo, fire(g, w, s) })`. `weaponStats` folds levels, evolution and player
 - **Characters** (`data/characters.ts`): stats, signature weapon, active ability, talent tree, codex chapters,
   and `hooks` (`onDamage`, `onHit`, `onKill`, `onHurt`, `update`, …) that the simulation calls at fixed points.
 - **Enemies, stages, omens, passives, forge, codex:** plain typed tables.
+- **Run systems** (`data/synergy.ts`, `data/boons.ts`, `data/shrines.ts`, elite affixes in `data/enemies.ts`):
+  resonance tiers, reactions, kill-streak tiers, boons, shrines. See [DESIGN.md](DESIGN.md) for intent.
+- **Story** (`data/story.ts`): all narrative text. The simulation emits beats; it never reads story text.
 
 `src/game/types.ts` is the contract. Engine-owned fields are typed exactly. Per-content runtime state (Vesper's
 `blood`, a weapon's `orbs`, a status mark like `hunted`) lives on deliberately open records: `Player`, `Weapon`,

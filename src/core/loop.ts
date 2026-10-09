@@ -10,8 +10,14 @@
 export interface LoopCallbacks {
   /** Advance the simulation by exactly `dt` seconds. */
   update(dt: number): void;
-  /** Draw. `alpha` is the interpolation factor, `frameDt` the real elapsed time (seconds). */
+  /** Draw. `alpha` is the interpolation factor, `frameDt` the (time-scaled) elapsed time (seconds). */
   render(alpha: number, frameDt: number): void;
+  /**
+   * Optional slow motion: given the real frame time, return how fast game time should run (1 = normal).
+   * Scaling only changes how many fixed steps a frame runs, never their size, so the simulation stays
+   * deterministic.
+   */
+  timeScale?(realDt: number): number;
 }
 
 export interface LoopStats {
@@ -68,6 +74,8 @@ export class FixedLoop {
     if (frameDt > this.maxFrame) frameDt = this.maxFrame;
     if (frameDt < 0) frameDt = 0;
 
+    const realDt = frameDt;
+    if (this.cb.timeScale) frameDt *= this.cb.timeScale(realDt);
     const t0 = performance.now();
     this.acc += frameDt;
     let steps = 0;
@@ -82,7 +90,7 @@ export class FixedLoop {
 
     const s = this.sample;
     s.frames++;
-    s.time += frameDt;
+    s.time += realDt;
     s.update += t1 - t0;
     s.render += t2 - t1;
     this.stats.steps = steps;
