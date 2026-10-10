@@ -136,6 +136,12 @@ function makeSprite(w: number, h: number, ox: number, oy: number, draw: (x: Canv
 }
 
 const easeOut = (k: number) => 1 - (1 - k) * (1 - k);
+/** Brightness falloff for big effects: past `ref` world units an effect dims, so a late-game blast never whites out the field. */
+const sizeFade = (r: number, ref = 90) => (r > ref ? Math.sqrt(ref / r) : 1);
+/** Additive effects stack: dim each one as the live count passes `n`. */
+const crowdFade = (count: number, n: number) => (count > n ? Math.sqrt(n / count) : 1);
+/** Light radius for an effect of gameplay radius `r`: grows sub-linearly so huge areas don't light the whole screen. */
+const softR = (r: number) => (r > 80 ? 80 + (r - 80) * 0.55 : r);
 
 export class Renderer {
   readonly backend: Backend;
@@ -583,34 +589,39 @@ export class Renderer {
   private drawZones(g: Game): void {
     const B = this.backend,
       t = g.time;
+    // late game stacks many pools at once (Sanctified Deluge, fire trails, spore clouds): each dims as they pile up
+    const crowd = crowdFade(g.zones.length, 5) * this.fx.intensity;
     for (const z of g.zones) {
-      const fade = Math.max(0, Math.min(1, z.age * 4, (z.dur - z.age) * 2));
+      const life = Math.max(0, Math.min(1, z.age * 4, (z.dur - z.age) * 2)),
+        fade = life * crowd * sizeFade(z.r, 110);
       if (z.kind === 'blackhole') {
-        B.radial(z.x, z.y, z.r, '#000', fade, '#0a0019', 0.95 * fade, 0.55);
-        B.ring(z.x, z.y, z.r * 0.85, z.r * 0.85, 0, z.r * 0.25, z.color, 0.5 * fade, 1.5);
-        B.ring(z.x, z.y, z.r * 1.05, z.r * 0.35, t * 2, 2, z.color, 0.8 * fade);
+        B.radial(z.x, z.y, z.r, '#000', life, '#0a0019', 0.95 * life, 0.55);
+        B.ring(z.x, z.y, z.r * 0.85, z.r * 0.85, 0, z.r * 0.25, z.color, 0.4 * fade, 1.5);
+        B.ring(z.x, z.y, z.r * 1.05, z.r * 0.35, t * 2, 2, z.color, 0.8 * life);
         // matter spiralling in
         if (this.dt > 0 && Math.random() < 0.6) {
           const an = Math.random() * TAU;
           this.fx.trail(z.x + Math.cos(an) * z.r * 1.3, z.y + Math.sin(an) * z.r * 1.3, z.color, 3);
         }
-        this.light(z.x, z.y, z.r * 1.6, 0.6, z.color);
+        this.light(z.x, z.y, softR(z.r) * 1.4, 0.45 * life * this.fx.intensity, z.color);
       } else if (z.kind === 'laser') {
-        B.radial(z.x, z.y, z.r, '#fff', 0.9 * fade, z.color, 0.7 * fade, 0.4);
-        this.light(z.x, z.y, z.r * 3, 1, z.color);
+        const I = this.fx.intensity;
+        B.radial(z.x, z.y, z.r, '#fff', 0.75 * life * I, z.color, 0.55 * life * I, 0.4);
+        this.light(z.x, z.y, z.r * 2, 0.75 * I, z.color);
       } else {
         const pulse = 0.85 + Math.sin(t * 6 + z.x) * 0.15;
-        B.radial(z.x, z.y, z.r, z.color, 0.45 * pulse * fade, z.color, 0.25 * fade, 0.7);
+        B.radial(z.x, z.y, z.r, z.color, 0.28 * pulse * fade, z.color, 0.16 * fade, 0.7);
         const rr = z.r * (0.95 + Math.sin(t * 4) * 0.03);
-        B.ring(z.x, z.y, rr, rr, 0, 1.5, z.color, 0.5 * pulse * fade);
-        if (z.kind === 'fire' && this.dt > 0 && Math.random() < 0.6)
+        // the rim stays crisp so the pool's reach is always readable, however faint its fill
+        B.ring(z.x, z.y, rr, rr, 0, 1.5, z.color, 0.45 * pulse * life);
+        if (z.kind === 'fire' && this.dt > 0 && Math.random() < 0.6 * crowd)
           this.fx.burst(z.x + U.lerp(-z.r, z.r, Math.random()) * 0.8, z.y + U.lerp(-z.r, z.r, Math.random()) * 0.8, '#ff9a3c', 1, {
             speed: 20,
             life: 0.5,
             up: true,
             size: 3,
           });
-        this.light(z.x, z.y, z.r * 1.9, 0.6 * fade, z.color);
+        this.light(z.x, z.y, softR(z.r) * 1.3, 0.4 * fade, z.color);
       }
     }
   }
@@ -1206,10 +1217,10 @@ export class Renderer {
       B.ring(x, y, p.frostAuraR, p.frostAuraR, 0, 1.5, 'rgb(186,230,253)', 0.35);
     }
     if (p.auraColor) {
-      B.glow(x, y - bob + 10, 60, p.auraColor, 0.55 + Math.sin(t * 5) * 0.15);
+      B.glow(x, y - bob + 10, 56, p.auraColor, 0.38 + Math.sin(t * 5) * 0.1);
       if (this.dt > 0 && Math.random() < 0.4)
         this.fx.burst(x + U.lerp(-16, 16, Math.random()), y + 20, p.auraColor, 1, { speed: 15, life: 0.8, up: true, size: 3 });
-      this.light(x, y, 160, 0.5, p.auraColor);
+      this.light(x, y, 150, 0.35, p.auraColor);
     }
     const alpha = p.invulnT > 0.15 ? 0.5 + Math.sin(t * 30) * 0.3 : 1;
     const s = 1.15,
@@ -1371,8 +1382,8 @@ export class Renderer {
         const b = sp as { len?: number; wid?: number };
         B.image(S.bolt(color, b.len || 20, b.wid || 5, sp.kind) as Img, x, y, { rot: pr.angle + pr.rot });
       }
-      if (pr.light) this.light(x, y, pr.light, 0.85, color);
-      else if (this.lightCols.length < 300) this.light(x, y, 55, 0.55, color);
+      if (pr.light) this.light(x, y, pr.light, 0.6 * this.fx.intensity, color);
+      else if (this.lightCols.length < 300) this.light(x, y, 45, 0.4 * this.fx.intensity, color);
     }
   }
 
@@ -1388,9 +1399,14 @@ export class Renderer {
     const darkA = m ? Math.min(0.85, +m[3]! * this.grade.dark * (g.eclipse ? 1.15 : 1)) : 0.5;
     B.beginLights(m ? `rgba(${m[0]},${m[1]},${m[2]},${darkA})` : amb, 0.25);
     for (let i = 0, j = 0; i < L.length; i += 4, j++) B.light(L[i]!, L[i + 1]!, L[i + 2]!, L[i + 3]! * eclipse, C[j] ?? lantern);
-    for (const ex of this.fx.explosions) B.light(ex.x, ex.y, ex.r * 2.8, (ex.life / ex.max) * 1.2, ex.color);
-    for (const f of this.fx.flashLights) B.light(f.x, f.y, f.r, f.life / f.max, f.color);
-    for (const nv of this.fx.novas) B.light(nv.n.x, nv.n.y, nv.n.r + 40, 0.5 * (1 - nv.n.r / nv.n.maxR), nv.color);
+    const fx = this.fx,
+      I = fx.intensity,
+      exK = crowdFade(fx.explosions.length, 6) * I,
+      flK = crowdFade(fx.flashLights.length, 10) * I,
+      nvK = crowdFade(fx.novas.length, 4) * I;
+    for (const ex of fx.explosions) B.light(ex.x, ex.y, softR(ex.r) * 2, (ex.life / ex.max) * 0.8 * exK, ex.color);
+    for (const f of fx.flashLights) B.light(f.x, f.y, softR(f.r), (f.life / f.max) * flK, f.color);
+    for (const nv of fx.novas) B.light(nv.n.x, nv.n.y, softR(nv.n.r) + 30, 0.3 * (1 - nv.n.r / nv.n.maxR) * nvK, nv.color);
     B.endLights();
   }
 
@@ -1467,15 +1483,19 @@ export class Renderer {
   private drawAdditive(g: Game, a: number, ppx: number, ppy: number): void {
     const B = this.backend,
       fx = this.fx,
-      t = g.time;
+      t = g.time,
+      // the player's spell-intensity setting scales every spell visual below (not enemy telegraphs)
+      I = fx.intensity;
     B.setBlend('add');
     if (this.quality >= 0.5) this.drawRibbons(g, a);
     this.drawParticles();
+    // a late-game volley is dozens of projectiles: their halos dim as the count grows, and big ones stay modest
+    const prK = 0.42 * crowdFade(g.projs.length, 40) * I;
     for (const pr of g.projs) {
       const sp = pr.sprite;
       if (!sp || sp.kind === 'void') continue;
-      const r = (pr.r || 6) * 1.6 + 4;
-      B.glow(pr.px + (pr.x - pr.px) * a, pr.py + (pr.y - pr.py) * a, r, sp.color ?? '#fff', 0.5);
+      const r = Math.min(40, (pr.r || 6) * 1.4 + 4);
+      B.glow(pr.px + (pr.x - pr.px) * a, pr.py + (pr.y - pr.py) * a, r, sp.color ?? '#fff', prK);
     }
     for (const pr of g.eprojs) B.glow(pr.px + (pr.x - pr.px) * a, pr.py + (pr.y - pr.py) * a, 14, pr.color, 0.7);
     // magnetised loot streaks and gem glints
@@ -1492,34 +1512,40 @@ export class Renderer {
       const k = Math.sin(G[i + 2]! * Math.PI);
       B.image(star, G[i]!, G[i + 1]!, { sx: 0.4 + k * 0.6, rot: G[i + 2]! * 1.5, alpha: k });
     }
+    const rgK = crowdFade(fx.rings.length, 6) * I;
     for (const r of fx.rings) {
-      const k = r.life / r.max,
-        rad = r.r * (r.thin ? 1 : 0.5 + easeOut(1 - k) * 0.5);
-      B.ring(r.x, r.y, rad, rad, 0, r.thin ? 2 : 4 + (1 - k) * 6, r.color, k * 0.9);
-      if (!r.thin) B.ring(r.x, r.y, rad, rad, 0, 18, r.color, k * 0.25, 1.5);
+      const lt = r.life / r.max,
+        k = lt * rgK * sizeFade(r.r, 140),
+        rad = r.r * (r.thin ? 1 : 0.5 + easeOut(1 - lt) * 0.5);
+      B.ring(r.x, r.y, rad, rad, 0, r.thin ? 2 : 3 + (1 - lt) * 4, r.color, k * 0.8);
+      if (!r.thin) B.ring(r.x, r.y, rad, rad, 0, 12, r.color, k * 0.18, 1.5);
     }
+    // novas: a crisp travelling edge with a soft halo; the inner wash stays faint so big rings don't flood the screen
+    const nvK = crowdFade(fx.novas.length, 4) * I;
     for (const nv of fx.novas) {
       const n = nv.n,
         k = 1 - n.r / n.maxR,
-        w = nv.thin ? 3 : 10 + k * 8;
-      B.ring(n.x, n.y, n.r, n.r, 0, w * 3, nv.color, 0.4, 1.5);
-      B.ring(n.x, n.y, n.r, n.r, 0, w, nv.color, 0.85);
-      B.circle(n.x, n.y, n.r, nv.color, 0.15 * k);
+        w = nv.thin ? 3 : 6 + k * 5,
+        f = nvK * sizeFade(n.r, 140);
+      B.ring(n.x, n.y, n.r, n.r, 0, w * 2, nv.color, 0.28 * f, 1.5);
+      B.ring(n.x, n.y, n.r, n.r, 0, w, nv.color, 0.75 * f);
+      B.circle(n.x, n.y, n.r, nv.color, 0.07 * k * f);
     }
-    // in a dense fight explosions stack additively: dim each one as the count grows so it never whites out
-    const exN = fx.explosions.length,
-      exK = exN > 12 ? Math.sqrt(12 / exN) : 1;
+    // in a dense fight explosions stack additively: dim each one as the count grows so it never whites out,
+    // and big blasts dim with their size so a late-game meteor reads as a hit, not a screen flash
+    const exK = crowdFade(fx.explosions.length, 6) * I;
     for (const ex of fx.explosions) {
-      const k = (ex.life / ex.max) * exK,
-        e = 1 - ex.life / ex.max;
+      const e = 1 - ex.life / ex.max,
+        k = (ex.life / ex.max) * exK * sizeFade(ex.r);
       // white-hot core → coloured fireball → expanding shock ring
-      B.glow(ex.x, ex.y, ex.r * (0.6 + e * 0.9), ex.color, k * 0.8);
-      B.glow(ex.x, ex.y, ex.r * (0.35 + e * 0.3), '#fff', k * k * 0.5);
-      const rr = ex.r * (0.3 + easeOut(e) * 0.9);
-      B.ring(ex.x, ex.y, rr, rr, 0, 3 + k * 4, '#fff', k * 0.6);
-      B.ring(ex.x, ex.y, rr, rr, 0, 16, ex.color, k * 0.3, 1.5);
+      B.glow(ex.x, ex.y, ex.r * (0.5 + e * 0.5), ex.color, k * 0.55);
+      B.glow(ex.x, ex.y, ex.r * (0.3 + e * 0.2), '#fff', k * k * 0.3);
+      const rr = ex.r * (0.3 + easeOut(e) * 0.7);
+      B.ring(ex.x, ex.y, rr, rr, 0, 2 + k * 3, '#fff', k * 0.45);
+      B.ring(ex.x, ex.y, rr, rr, 0, 10, ex.color, k * 0.2, 1.5);
     }
     const pts: number[] = [];
+    const bmK = crowdFade(fx.beams.length, 14) * I;
     for (const b of fx.beams) {
       const k = b.life / b.max,
         dx = b.x2 - b.x1,
@@ -1536,11 +1562,13 @@ export class Renderer {
         pts.push(b.x1 + dx * tt + nx * off, b.y1 + dy * tt + ny * off);
       }
       pts.push(b.x2, b.y2);
-      this.glowPath(pts, b.w * (0.5 + k), b.color, k, k * 0.8);
-      B.glow(b.x2, b.y2, 18 + b.w * 3, b.color, k * 0.8);
+      this.glowPath(pts, b.w * (0.5 + k), b.color, k * bmK, k * 0.7 * bmK);
+      B.glow(b.x2, b.y2, 14 + b.w * 2.5, b.color, k * 0.55 * bmK);
     }
+    const boK = crowdFade(fx.bolts.length, 4) * I;
     for (const bo of fx.bolts) {
-      const k = bo.life / bo.max;
+      const lt = bo.life / bo.max,
+        k = lt * boK;
       pts.length = 0;
       let x = bo.x + (Math.random() - 0.5) * 60,
         y = bo.y - 420;
@@ -1551,15 +1579,17 @@ export class Renderer {
         pts.push(x, y);
       }
       pts.push(bo.x, bo.y);
-      this.glowPath(pts, 4 * k + 1, bo.color, k, k);
-      B.glow(bo.x, bo.y, 50, bo.color, k * 0.8);
-      B.ring(bo.x, bo.y, 30 * (1.5 - k), 12 * (1.5 - k), 0, 2, '#fff', k);
+      this.glowPath(pts, 3 * lt + 1, bo.color, k, k * 0.8);
+      B.glow(bo.x, bo.y, 40, bo.color, k * 0.55);
+      B.ring(bo.x, bo.y, 30 * (1.5 - lt), 12 * (1.5 - lt), 0, 2, '#fff', k * 0.8);
     }
+    const lnK = crowdFade(fx.lines.length, 6) * I;
     for (const ln of fx.lines) {
-      const k = ln.life / ln.max,
+      const lt = ln.life / ln.max,
+        k = lt * 0.75 * lnK,
         ca = Math.cos(ln.angle),
         sa = Math.sin(ln.angle),
-        L = ln.len * Math.min(1, (1 - k) * 3 + 0.2);
+        L = ln.len * Math.min(1, (1 - lt) * 3 + 0.2);
       B.line(ln.x, ln.y, ln.x + ca * L, ln.y + sa * L, ln.width, ln.color, k, 0, ln.color, 0);
       pts.length = 0;
       pts.push(ln.x, ln.y);
@@ -1570,14 +1600,17 @@ export class Renderer {
       }
       for (let i = 0; i + 3 < pts.length; i += 2) B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, 2, '#fff', k);
     }
+    const arK = crowdFade(fx.arcs.length, 8) * I;
     for (const ar of fx.arcs) {
-      const k = ar.life / ar.max,
-        e = 1 - k,
-        r = ar.r * (ar.thin ? 1 : 0.7 + easeOut(e) * 0.3);
+      const lt = ar.life / ar.max,
+        k = lt * arK,
+        r = ar.r * (ar.thin ? 1 : 0.7 + easeOut(1 - lt) * 0.3),
+        // wide and long sweeps (a full 360° inferno) keep a faint smear: the blade edge carries the motion
+        fill = (ar.thin ? 0.24 : 0.34) * Math.min(1, 1.3 / ar.halfArc) * sizeFade(r, 130);
       // a swept blade: bright leading edge, the sector smearing behind it
-      B.sector(ar.x, ar.y, r, ar.angle, ar.halfArc, ar.color, (ar.thin ? 0.3 : 0.45) * k);
-      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 10, ar.color, k * 0.4);
-      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 3, '#fff', k);
+      B.sector(ar.x, ar.y, r, ar.angle, ar.halfArc, ar.color, fill * k);
+      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 8, ar.color, k * 0.35);
+      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 2.5, '#fff', k * 0.9);
     }
     for (const w of fx.whips) {
       const k = w.life / w.max,
@@ -1591,7 +1624,7 @@ export class Renderer {
           u = 1 - s;
         pts.push(u * u * w.x + 2 * u * s * cx + s * s * ex, u * u * w.y + 2 * u * s * cy + s * s * ey);
       }
-      this.glowPath(pts, 6, w.color, k, 0.5 * k);
+      this.glowPath(pts, 6, w.color, k * I, 0.5 * k * I);
     }
     for (const lb of fx.lobs) {
       const k = lb.t / lb.max,
@@ -1639,14 +1672,14 @@ export class Renderer {
           const an = w.angle + (b / beams) * TAU,
             x2 = ppx + Math.cos(an) * w.len,
             y2 = ppy + Math.sin(an) * w.len;
-          B.line(ppx, ppy, x2, y2, 40, '#fbbf24', 0.35, 1.5, '#fbbf24', 0);
-          B.line(ppx, ppy, x2, y2, 14, w.evolved ? '#fb923c' : '#fbbf24', 0.8, 0, '#fbbf24', 0);
-          B.line(ppx, ppy, x2, y2, 4, '#fff', 0.8, 0, '#fff', 0.2);
+          B.line(ppx, ppy, x2, y2, 22, '#fbbf24', 0.22 * I, 1.5, '#fbbf24', 0);
+          B.line(ppx, ppy, x2, y2, 9, w.evolved ? '#fb923c' : '#fbbf24', 0.6 * I, 0, '#fbbf24', 0);
+          B.line(ppx, ppy, x2, y2, 3, '#fff', 0.6 * Math.sqrt(I), 0, '#fff', 0.15);
         }
       }
       if (w.id === 'plague_aura' && w.radius) {
         const r = w.radius;
-        B.radial(ppx, ppy, r, w.evolved ? '#84cc16' : '#a3e635', 0.02, '#a3e635', 0.18, 0.8, 0.3);
+        B.radial(ppx, ppy, r, w.evolved ? '#84cc16' : '#a3e635', 0.02, '#a3e635', 0.11 * sizeFade(r, 140) * I, 0.8, 0.3);
         const rr = r * (0.98 + Math.sin(t * 3) * 0.02);
         B.ring(ppx, ppy, rr, rr, 0, 2, 'rgb(163,230,53)', 0.35);
       }

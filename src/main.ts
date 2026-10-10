@@ -26,6 +26,7 @@ function boot(): void {
   fx.shakeMul = settings.reducedMotion ? 0 : settings.shake;
   fx.flashMul = settings.reducedMotion ? 0.25 : 1;
   fx.dmgEnabled = settings.dmgNumbers;
+  fx.intensity = settings.fxIntensity;
   const pref = (params.get('renderer') as BackendPreference | null) ?? 'auto';
   const renderer = new Renderer(canvas, fx, pref);
   renderer.quality = settings.quality || 1;

@@ -209,6 +209,7 @@ class UiController {
     this.R.fx.shakeMul = s.reducedMotion ? 0 : s.shake;
     this.R.fx.flashMul = s.reducedMotion ? 0.25 : 1;
     this.R.fx.dmgEnabled = s.dmgNumbers;
+    this.R.fx.intensity = s.fxIntensity;
     this.R.postEnabled = s.postfx;
     document.getElementById('fps')?.classList.toggle('hidden', !s.fps);
   }
@@ -572,6 +573,7 @@ class UiController {
       <label class="setting"><span>Music</span><input type="range" min="0" max="1" step="0.05" value="${s.music}" id="musR"></label>
       <label class="setting"><span>Screen shake</span><input type="checkbox" ${s.shake ? 'checked' : ''} id="shakeC"></label>
       <label class="setting"><span>Reduced motion</span><input type="checkbox" ${s.reducedMotion ? 'checked' : ''} id="motionC"></label>
+      <label class="setting"><span>Spell effects</span><input type="range" min="0.25" max="1" step="0.05" value="${s.fxIntensity}" id="fxR"></label>
       <label class="setting"><span>Damage numbers</span><input type="checkbox" ${s.dmgNumbers ? 'checked' : ''} id="dmgC"></label>
       <label class="setting"><span>Bloom &amp; colour grading</span><input type="checkbox" ${s.postfx ? 'checked' : ''} id="postC"></label>
       <label class="setting"><span>Damage meter (T)</span><input type="checkbox" ${s.dmgMeter ? 'checked' : ''} id="meterC"></label>
@@ -586,6 +588,7 @@ class UiController {
     $('musR').oninput = (e) => { s.music = Number(val(e).value); audio.setMusic(s.music); Save.save(); };
     $('shakeC').onchange = (e) => { s.shake = val(e).checked ? 1 : 0; this.applyDisplaySettings(); Save.save(); };
     $('motionC').onchange = (e) => { s.reducedMotion = val(e).checked; this.applyDisplaySettings(); Save.save(); };
+    $('fxR').oninput = (e) => { s.fxIntensity = Number(val(e).value); this.applyDisplaySettings(); Save.save(); };
     $('dmgC').onchange = (e) => { s.dmgNumbers = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('postC').onchange = (e) => { s.postfx = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('fpsC').onchange = (e) => { s.fps = val(e).checked; this.applyDisplaySettings(); Save.save(); };

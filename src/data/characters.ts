@@ -355,7 +355,7 @@ CHARS.push({
       g.nova(p.x, p.y, 480, (60 + p.level * 8) * p.stats.might * mult, w, { color: '#fde68a', speed: 900, knock: 2 });
       g.heal(p.stats.maxHp * 0.2);
       if (p.f.sanctuary) g.spawnZone({ x: p.x, y: p.y, r: 150, dur: 5, dmg: 0, tick: 0.5, weapon: w, color: '#fde68a', kind: 'holy', healPct: 0.025 });
-      g.fx.flash('#fde68a', 0.5); g.sfx('nova');
+      g.fx.flash('#fde68a', 0.2); g.sfx('nova');
     } },
   hooks: {
     init(g, p) { p.shieldCap = 0.3; p.overhealToShield = true; },
@@ -517,7 +517,7 @@ CHARS.push({
   active: { name: 'Army of the Night', icon: { g: 'ghost', c: '#86efac' }, cd: 20, desc: 'Summon 8 wraiths for 8 seconds that tear through the horde.',
     use(g, p) {
       for (let i = 0; i < 8; i++) { const a = i * U.TAU / 8; g.spawnAlly({ kind: 'wraith', x: p.x + Math.cos(a) * 50, y: p.y + Math.sin(a) * 50, dmg: () => (20 + p.level * 3) * p.stats.might * (1 + p.stats.minionDmg), life: 8, speed: 380, sprite: 'wraith', color: '#86efac', weapon: { id: 'skill', ability: true } }); }
-      g.sfx('summon'); g.fx.flash('#86efac', 0.3);
+      g.sfx('summon'); g.fx.flash('#86efac', 0.12);
     } },
   hooks: {
     init(g, p) { p.res = 0; p.resMax = 100; p.lastKillT = 0; },
@@ -602,7 +602,7 @@ CHARS.push({
       const dur = 3 * (p.f.eternal_winter ? 2 : 1);
       g.eachEnemyIn(p.x, p.y, 560, (e) => { if (e.boss) g.applyStatus(e, 'chill', { dur, power: 0.7 }); else g.applyStatus(e, 'freeze', { dur, noMul: true }); });
       if (p.f.ice_barrier) g.addShield(p.stats.maxHp * 0.3);
-      g.fx.flash('#bae6fd', 0.6); g.fx.ring(p.x, p.y, 560, '#e0f2fe'); g.sfx('freeze');
+      g.fx.flash('#bae6fd', 0.25); g.fx.ring(p.x, p.y, 560, '#e0f2fe'); g.sfx('freeze');
     } },
   hooks: {
     init(g, p) { if (p.f.eternal_winter) p.freezeMul = 2; },
@@ -672,7 +672,7 @@ W({
     const doSlam = (mult: number) => {
       const r = 135 * s.area;
       if (p.f.titans_grip) g.pullEnemies(p.x, p.y, r * 1.6, 70);
-      g.nova(p.x, p.y, r, s.dmg * mult, w, { color: '#fbbf24', speed: 750, knock: s.knock, status: { type: 'stun', dur: s.duration }, shake: 6 });
+      g.nova(p.x, p.y, r, s.dmg * mult, w, { color: '#fbbf24', speed: 750, knock: s.knock, status: { type: 'stun', dur: s.duration }, shake: 3.5 });
       if (w.evolved) for (let i = 0; i < 4; i++) g.after(0.15, () => g.lineDamage(p.x, p.y, i * Math.PI / 2 + Math.PI / 4, 260 * s.area, 46, s.dmg * 0.7 * mult, w, { color: '#f97316', status: { type: 'stun', dur: s.duration } }));
       if (p.f.unstoppable) { p.unstopT = 2; }
       g.sfx('explode');
@@ -694,7 +694,7 @@ CHARS.push({
       const dmg = (40 + p.level * 5) * p.stats.might;
       const w = { def: WEAPONS.seismic_slam, id: 'seismic_slam', ability: true };
       [-0.4, 0, 0.4].forEach((o, i) => g.after(i * 0.1, () => g.lineDamage(p.x, p.y, base + o, 330, 56, dmg, w, { color: '#f97316', status: { type: 'stun', dur: 2 }, knock: 1 })));
-      g.fx.shake(10); g.sfx('explode');
+      g.fx.shake(6); g.sfx('explode');
     } },
   hooks: {
     // Juggernaut: thorns (resolved in Game.hitPlayer) also return twice his Armor

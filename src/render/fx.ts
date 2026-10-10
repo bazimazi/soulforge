@@ -373,6 +373,14 @@ export class FX {
   shakeMul = 1;
   /** Scales full-screen flashes (reduced motion). */
   flashMul = 1;
+  private _intensity = 1;
+  /** Spell effect intensity (settings slider): scales spell visuals, their light and particle counts. */
+  get intensity(): number {
+    return this._intensity;
+  }
+  set intensity(v: number) {
+    this._intensity = Number.isFinite(v) ? U.clamp(v, 0.25, 1) : 1;
+  }
   /** Where souls fly to (the champion), set by the renderer each frame. */
   soulX = 0;
   soulY = 0;
@@ -446,8 +454,12 @@ export class FX {
   /** A refraction ring rippling out from (x, y) to `maxR` world units; `str` is its displacement in pixels. */
   shockwave(x: number, y: number, maxR: number, str = 14, life = 0.55): void {
     if (this.shakeMul <= 0) return; // reduced motion
-    if (this.waves.length >= 8) this.waves.shift();
-    this.waves.push({ x, y, maxR, str, life, max: life });
+    // a few ripples read as impact; a constant stack of them just warps the whole screen
+    if (this.waves.length >= 4) {
+      if (str < 20) return;
+      this.waves.shift(); // set pieces (a Herald's fall) always get their ripple
+    }
+    this.waves.push({ x, y, maxR, str: str < 20 ? str * this._intensity : str, life, max: life });
   }
   /** A brief coloured light at (x, y). */
   flashLight(x: number, y: number, r: number, color: string, life = 0.18): void {
@@ -543,7 +555,7 @@ export class FX {
   }
   trail(x: number, y: number, color: string, size?: number): void {
     if (this.parts.count > BURST_LIMIT) return;
-    this.parts.spawn(x, y, rr(-10, 10), rr(-10, 10), 0.25, size || 4, color, PF.GLOW);
+    this.parts.spawn(x, y, rr(-10, 10), rr(-10, 10), 0.25, Math.min(7, size || 4), color, PF.GLOW);
   }
   ambient(x: number, y: number, vx: number, vy: number, life: number, size: number, color: string): void {
     if (this.parts.count > AMBIENT_LIMIT) return;
@@ -552,7 +564,7 @@ export class FX {
   ring(x: number, y: number, r: number, color: string, o: { life?: number; thin?: boolean } = {}): void {
     const life = o.life || 0.45;
     this.rings.push({ x, y, r, color, life, max: life, thin: !!o.thin });
-    if (!o.thin && r >= 100) this.shockwave(x, y, r, Math.min(18, 6 + r * 0.04), 0.45);
+    if (!o.thin && r >= 100) this.shockwave(x, y, r, Math.min(9, 4 + r * 0.015), 0.45);
   }
   nova(n: NovaFx['n'], color: string, thin?: boolean): void {
     this.novas.push({ n, color, thin });
@@ -560,16 +572,17 @@ export class FX {
   beam(x1: number, y1: number, x2: number, y2: number, color: string, w?: number, life?: number): void {
     const l = life || 0.15;
     this.beams.push({ x1, y1, x2, y2, color, w: w || 3, life: l, max: l, seed: rnd() * 1000 });
-    if (this.flashLights.length < 40) this.flashLight(x2, y2, 60 + (w || 3) * 10, color, l);
+    if (this.flashLights.length < 24) this.flashLight(x2, y2, 40 + (w || 3) * 6, color, l);
   }
   line(x: number, y: number, angle: number, len: number, width: number, color: string): void {
     this.lines.push({ x, y, angle, len, width, color, life: 0.4, max: 0.4 });
-    this.burst(x + (Math.cos(angle) * len) / 2, y + (Math.sin(angle) * len) / 2, color, 8, { speed: 80, life: 0.4 });
+    this.burst(x + (Math.cos(angle) * len) / 2, y + (Math.sin(angle) * len) / 2, color, 5, { speed: 80, life: 0.4 });
   }
   arc(x: number, y: number, angle: number, r: number, halfArc: number, color: string, thin?: boolean): void {
     const l = thin ? 0.16 : 0.28;
     this.arcs.push({ x, y, angle, r, halfArc, color, life: l, max: l, thin });
-    if (!thin) this.sparks(x + Math.cos(angle) * r * 0.8, y + Math.sin(angle) * r * 0.8, angle, halfArc * 0.6, color, 4, 300, 0.2);
+    if (!thin)
+      this.sparks(x + Math.cos(angle) * r * 0.8, y + Math.sin(angle) * r * 0.8, angle, Math.min(1, halfArc * 0.6), color, 3, 300, 0.2);
   }
   lob(x: number, y: number, tx: number, ty: number, t: number, color: string): void {
     this.lobs.push({ x, y, tx, ty, t: 0, max: t, color });
@@ -590,21 +603,30 @@ export class FX {
   explosion(x: number, y: number, r: number, color: string, small?: boolean): void {
     const l = small ? 0.25 : 0.5;
     this.explosions.push({ x, y, r, color, life: l, max: l });
-    if (!small || r > 50) this.decal(x, y, r * 0.75, color, 'scorch', 6);
-    this.burst(x, y, color, small ? 6 : Math.min(30, 8 + r * 0.25), { speed: r * 2.2, life: 0.5, size: small ? 3 : 5 });
+    if (!small || r > 50) this.decal(x, y, Math.min(r * 0.75, 90), color, 'scorch', 6);
+    // late-game builds detonate many blasts a second: fewer, shorter-flung particles each, and fewer still in a crowd
+    const crowd = (this.explosions.length > 8 ? 0.5 : 1) * this._intensity,
+      fling = Math.min(r, 110);
+    this.burst(x, y, color, Math.round((small ? 5 : Math.min(16, 6 + r * 0.12)) * crowd), {
+      speed: fling * 2,
+      life: 0.45,
+      size: small ? 3 : 4,
+    });
     if (!small) {
-      this.burst(x, y, '#fff', 4, { speed: r, life: 0.3, size: 3 });
-      this.sparks(x, y, 0, Math.PI, color, Math.min(18, 6 + r * 0.1), r * 4, 0.3, 2.6);
-      this.debris(x, y, '#2a2024', Math.min(10, 3 + Math.floor(r / 25)), r * 1.6, 3.5, 1.2);
-      if (r >= 55) this.shockwave(x, y, r * 1.6, Math.min(22, 6 + r * 0.06));
+      this.burst(x, y, '#fff', Math.round(3 * this._intensity), { speed: fling, life: 0.25, size: 3 });
+      this.sparks(x, y, 0, Math.PI, color, Math.round(Math.min(10, 4 + r * 0.05) * crowd), fling * 3.5, 0.28, 2.4);
+      this.debris(x, y, '#2a2024', Math.round(Math.min(6, 2 + Math.floor(r / 30)) * crowd), fling * 1.5, 3.5, 1.2);
+      if (r >= 55) this.shockwave(x, y, Math.min(r * 1.4, 220), Math.min(10, 4 + r * 0.03));
     }
   }
   lightning(x: number, y: number, color?: string): void {
     const c = color || '#fde047';
     this.bolts.push({ x, y, color: c, life: 0.22, max: 0.22, seed: rnd() * 100 });
-    this.burst(x, y, c, 10, { speed: 120, life: 0.35, size: 3 });
-    this.sparks(x, y, -Math.PI / 2, Math.PI, '#fffbe0', 6, 420, 0.2);
-    this.flashLight(x, y, 220, c, 0.22);
+    const crowd = this.bolts.length > 4,
+      I = this._intensity;
+    this.burst(x, y, c, Math.round((crowd ? 3 : 6) * I), { speed: 120, life: 0.35, size: 3 });
+    this.sparks(x, y, -Math.PI / 2, Math.PI, '#fffbe0', Math.round((crowd ? 2 : 4) * I), 420, 0.2);
+    this.flashLight(x, y, crowd ? 90 : 140, c, 0.22);
   }
   whip(x: number, y: number, sd: number, len: number, hgt: number, color: string): void {
     this.whips.push({ x, y, sd, len, hgt, color, life: 0.2, max: 0.2 });

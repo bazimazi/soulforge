@@ -656,7 +656,7 @@ export class Game {
       if (o.status) this.applyStatus(e, o.status.type, o.status);
     });
     this.fx.explosion(x, y, r, o.color || '#ff7043', o.small);
-    if (!o.small) { this.fx.shake(Math.min(6, r * 0.05)); this.sfx('explode'); }
+    if (!o.small) { this.fx.shake(Math.min(3.5, r * 0.03)); this.sfx('explode'); }
   }
   /** Expanding ring that damages enemies as it passes them. */
   nova(x: number, y: number, r: number, dmg: number, w: DamageSource | null | undefined, o: NovaOpts = {}): void {
@@ -729,7 +729,7 @@ export class Game {
     });
   }
   lob(x: number, y: number, tx: number, ty: number, t: number, color: string, cb: () => void): void { this.fx.lob(x, y, tx, ty, t, color); this.after(t, cb); }
-  meteor(x: number, y: number, delay: number, cb: () => void): void { this.fx.meteor(x, y, delay); this.after(delay, () => { this.fx.shake(5); cb(); }); }
+  meteor(x: number, y: number, delay: number, cb: () => void): void { this.fx.meteor(x, y, delay); this.after(delay, () => { this.fx.shake(2.5); cb(); }); }
   rain(x: number, y: number, r: number, count: number, dur: number, dmg: number, w: DamageSource | null | undefined, color: string): void {
     for (let i = 0; i < count; i++) {
       const a = rand() * TAU, d = Math.sqrt(rand()) * r;

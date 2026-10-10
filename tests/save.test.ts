@@ -9,6 +9,7 @@ function v1Save(): Record<string, unknown> {
   const d: any = defaults();
   d.v = 1;
   delete d.settings.reducedMotion; // field introduced in v2
+  delete d.settings.fxIntensity; // added later, filled from defaults by the merge
   delete d.story; // introduced in v3
   d.stats.runs = 3;
   d.gold = 1234;
@@ -92,6 +93,7 @@ describe('Save.load', () => {
     expect(d.chars.kael!.level).toBe(5);
     expect(d.chars.kael!.talents).toEqual({ k1: 2 });
     expect(d.settings.reducedMotion).toBe(false);
+    expect(d.settings.fxIntensity).toBe(1);
     expect(d.settings.sfx).toBe(0.6);
     expect(d.chars.lyra!.unlocked).toBe(true); // missing chars are filled in
     // v3: a veteran save skips the prologue and gains the new codex/stat fields
