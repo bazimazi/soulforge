@@ -57,6 +57,7 @@ export const STAT_INFO: Record<string, StatInfo> = {
   execute: { name: 'Execute Threshold', fmt: (v) => '+' + Math.round(v * 100) + '%' },
   reactDmg: { name: 'Reaction Damage', fmt: (v) => '+' + Math.round(v * 100) + '%' },
   sigDmg: { name: 'Signature Damage', fmt: (v) => '+' + Math.round(v * 100) + '%' },
+  cull: { name: 'Cull Threshold', fmt: (v) => '+' + Math.round(v * 100) + '%' },
   maxHpPct: { name: 'Max Health', fmt: (v) => (v < 0 ? '-' : '+') + Math.round(Math.abs(v) * 100) + '%' },
 };
 const P = (v: number): string => { const a = Math.abs(v * 100); return (a > 0 && a < 1 ? (v * 100).toFixed(1) : Math.round(v * 100)) + '%'; };
@@ -83,6 +84,13 @@ export const PASSIVES: PassiveDef[] = [
   { id: 'cloak', name: 'Phantom Cloak', icon: { g: 'ghost', c: '#94a3b8' }, max: 5, per: { dodge: 0.03 }, desc: 'Dodge chance +3% per level.' },
   { id: 'idol', name: 'Golden Idol', icon: { g: 'coin', c: '#f5c542' }, max: 5, per: { greed: 0.15 }, desc: 'Gold gain +15% per level.' },
   { id: 'skull', name: 'Cursed Skull', icon: { g: 'skull', c: '#a78bfa' }, max: 5, per: { curse: 0.1 }, desc: 'Curse +10% per level: more enemies, more HP, more rewards.' },
+  // fourth round: each of the first four pairs with a new weapon's evolution
+  { id: 'ember_sigil', name: 'Ember Sigil', icon: { g: 'flame', c: '#ff9a3c' }, max: 5, per: { burnDmg: 0.12, reactDmg: 0.1 }, desc: 'Burn damage +12% and reaction damage +10% per level.' },
+  { id: 'frostbite', name: 'Frostbite Charm', icon: { g: 'snowflake', c: '#a5f3fc' }, max: 5, per: { slowPower: 0.1, area: 0.03 }, desc: 'Slow power +10% and Area +3% per level.' },
+  { id: 'tome', name: "Necromancer's Tome", icon: { g: 'book', c: '#86efac' }, max: 5, per: { minionDmg: 0.12, duration: 0.04 }, desc: 'Minion damage +12% and Duration +4% per level.' },
+  { id: 'seal', name: "Warlord's Seal", icon: { g: 'crown', c: '#f87171' }, max: 5, per: { eliteDmg: 0.1 }, desc: 'Damage to elites and Heralds +10% per level.' },
+  { id: 'thornmail', name: 'Thorned Mail', icon: { g: 'shield', c: '#f97316' }, max: 5, per: { thorns: 0.25, armor: 0.5 }, desc: 'Thorns +25% and Armor +0.5 per level: whatever strikes you bleeds for it.' },
+  { id: 'brand', name: "Reaper's Brand", icon: { g: 'scythe', c: '#a78bfa' }, max: 5, per: { cull: 0.02 }, desc: 'Cull +2% per level: non-boss enemies struck below that share of their health die outright.' },
 ];
 export const PASSIVE_BY_ID: Record<string, PassiveDef> = {}; PASSIVES.forEach((p) => (PASSIVE_BY_ID[p.id] = p));
 
@@ -146,5 +154,6 @@ export const MATERIALS: MaterialDef[] = [
   { id: 'dust', name: 'Arcane Dust', color: '#a78bfa', icon: { g: 'star', c: '#a78bfa' }, tier: 2 },
   { id: 'crystal', name: 'Void Crystal', color: '#60a5fa', icon: { g: 'gem', c: '#60a5fa' }, tier: 3 },
   { id: 'star', name: 'Starshard', color: '#fde68a', icon: { g: 'shard', c: '#fde68a' }, tier: 4 },
+  { id: 'eclipse', name: 'Eclipse Shard', color: '#f43f5e', icon: { g: 'moon', c: '#f43f5e' }, tier: 5 },
 ];
 export const MAT_BY_ID: Record<string, MaterialDef> = {}; MATERIALS.forEach((m) => (MAT_BY_ID[m.id] = m));

@@ -47,7 +47,7 @@ function run(over: Partial<RunSummary> = {}): RunSummary {
     gold: 100,
     embers: 2,
     charXp: 10,
-    mats: { iron: 3, dust: 1, crystal: 0, star: 0 },
+    mats: { iron: 3, dust: 1, crystal: 0, star: 0, eclipse: 0 },
     enemyKills: { bat: 30, ghoul: 20 },
     bossKillsBy: {},
     dmgByWeapon: {},
@@ -60,6 +60,11 @@ function run(over: Partial<RunSummary> = {}): RunSummary {
     reactions: 3,
     boons: [],
     shrines: 1,
+    torment: 0,
+    apotheoses: 0,
+    abilityRank: 0,
+    art: null,
+    artUses: 0,
     ...over,
   };
 }

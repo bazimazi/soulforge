@@ -138,6 +138,16 @@ h3,
 }
 .grow {
   flex: 1;
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+/* trailing controls in a flex row (price/claim buttons, rank counters) keep their size; the .grow column absorbs the squeeze */
+.grow ~ .btn,
+.grow ~ .rank,
+.grow ~ .tag,
+.grow ~ .mastery-lvl {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .muted {
   color: var(--muted);
@@ -193,9 +203,11 @@ h3,
 .pips {
   display: flex;
   gap: 3px;
+  min-width: 0;
 }
 .pips i {
-  width: 9px;
+  flex: 0 1 9px;
+  min-width: 3px;
   height: 5px;
   background: rgba(255, 255, 255, 0.15);
   border-radius: 1px;
@@ -2455,4 +2467,407 @@ textarea {
   .logo h1 {
     animation: none !important;
   }
+}
+
+/* ---------- fourth round: long-term progression ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 9px;
+  background: #f43f5e;
+  color: #fff;
+  font-size: 12px;
+  vertical-align: middle;
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.6);
+}
+.soul-rank {
+  margin-top: 6px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  align-items: center;
+  font-size: 14px;
+}
+.soul-rank b {
+  color: #fde68a;
+}
+.soul-rank .tip {
+  grid-column: 1 / -1;
+}
+.asc-pip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-family: 'Cinzel', serif;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1a1408;
+  background: linear-gradient(180deg, #fde68a, #c9a24a);
+  box-shadow: 0 0 8px rgba(253, 230, 138, 0.5);
+  vertical-align: middle;
+}
+.asc-pip.big {
+  font-size: 18px;
+  padding: 0 8px;
+}
+.tag.torment-tag,
+.tag.rar-cursed {
+  background: linear-gradient(90deg, #7f1d1d, #be123c);
+  color: #fff;
+}
+.tag.rar-legendary,
+.tag.apex {
+  background: linear-gradient(90deg, #fde68a, #fb923c);
+  color: #2a1606;
+}
+.tag.od {
+  background: linear-gradient(90deg, #f472b6, #fb7185);
+  color: #fff;
+}
+.tag.mastery-up {
+  background: rgba(252, 165, 165, 0.15);
+  color: #fecaca;
+  border: 1px solid rgba(252, 165, 165, 0.35);
+}
+
+/* Starweb */
+.starweb-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .starweb-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.starweb-wrap {
+  padding: 8px;
+  background: radial-gradient(circle at 50% 50%, rgba(60, 40, 90, 0.35), rgba(5, 5, 12, 0.92) 70%);
+}
+svg.starweb {
+  display: block;
+  width: 100%;
+  max-height: calc(100vh - 230px);
+  min-height: 360px;
+}
+svg.starweb .edge {
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 2;
+}
+svg.starweb .edge.open {
+  stroke: rgba(253, 230, 138, 0.3);
+  stroke-dasharray: 4 6;
+}
+svg.starweb .edge.lit {
+  stroke-width: 3.5;
+}
+svg.starweb .star {
+  cursor: pointer;
+  outline: none;
+}
+svg.starweb .star > * {
+  fill: #15121f;
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 2;
+  transition:
+    fill 0.15s,
+    stroke 0.15s;
+}
+svg.starweb .star.reach > * {
+  stroke: var(--c);
+  stroke-opacity: 0.55;
+}
+svg.starweb .star.avail > * {
+  stroke: var(--c);
+  stroke-width: 3;
+  animation: starPulse 1.6s ease-in-out infinite;
+}
+svg.starweb .star.lit > * {
+  fill: var(--c);
+  stroke: #fff;
+  filter: drop-shadow(0 0 6px var(--c));
+}
+svg.starweb .star:hover > *,
+svg.starweb .star:focus > *,
+svg.starweb .star.sel > * {
+  stroke: #fff;
+  stroke-width: 3.5;
+}
+svg.starweb .star.k-origin > * {
+  fill: #fde68a;
+  stroke: #fff;
+  filter: drop-shadow(0 0 10px #fde68a);
+}
+@keyframes starPulse {
+  0%,
+  100% {
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke-opacity: 0.35;
+  }
+}
+svg.starweb .cons-lbl {
+  font-family: 'Cinzel', serif;
+  font-size: 22px;
+  font-weight: 700;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: #000;
+  stroke-width: 4px;
+  pointer-events: none;
+}
+.legend {
+  display: flex;
+  gap: 14px;
+  margin: 6px 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.legend .lg {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 5px;
+  background: var(--gold);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.legend .lg.notable {
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+.legend .lg.keystone {
+  width: 14px;
+  height: 14px;
+  clip-path: polygon(50% 0, 62% 38%, 100% 50%, 62% 62%, 50% 100%, 38% 62%, 0 50%, 38% 38%);
+}
+
+/* Champion Ascension */
+.asc-ladder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.asc-rank {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.asc-rank .num {
+  font-family: 'Cinzel', serif;
+  font-size: 20px;
+  font-weight: 700;
+  min-width: 46px;
+  text-align: center;
+  color: var(--muted);
+}
+.asc-rank.done {
+  border-color: rgba(253, 230, 138, 0.35);
+}
+.asc-rank.done .num {
+  color: #fde68a;
+  text-shadow: 0 0 12px rgba(253, 230, 138, 0.6);
+}
+.asc-rank.next {
+  border-color: var(--gold);
+  background: linear-gradient(90deg, rgba(231, 195, 104, 0.12), rgba(0, 0, 0, 0.35));
+}
+.asc-rank.locked {
+  opacity: 0.55;
+}
+
+/* talents: the new tiers */
+.node.mastery {
+  border-color: rgba(253, 230, 138, 0.35);
+}
+.node.apex {
+  border-color: rgba(251, 146, 60, 0.6);
+  background: linear-gradient(180deg, rgba(251, 146, 60, 0.14), rgba(0, 0, 0, 0.3));
+}
+
+/* Weapon Mastery */
+.mastery-lvl {
+  font-family: 'Cinzel', serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--gold);
+}
+.mastery-lvl small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.perks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.perk {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--muted);
+}
+.perk.on {
+  color: #1a1408;
+  background: var(--gold);
+  border-color: var(--gold);
+}
+
+/* Soul Arts */
+.art-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.art-card {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.art-card h4 {
+  margin: 0 0 2px;
+  color: var(--c);
+}
+.art-card p {
+  font-size: 14px;
+  color: #cfcadb;
+}
+.art-card.eq {
+  border-color: var(--c);
+  box-shadow: 0 0 18px rgba(233, 213, 255, 0.25);
+}
+.art-card.unlearned .icon {
+  filter: grayscale(0.8);
+  opacity: 0.6;
+}
+
+/* Night Contracts */
+.contracts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 900px;
+}
+.contract {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.35);
+}
+.contract.done {
+  border-color: var(--gold);
+  box-shadow: 0 0 14px rgba(231, 195, 104, 0.25);
+}
+.contract.claimed {
+  opacity: 0.6;
+}
+.contract.bonus {
+  border-style: dashed;
+}
+
+/* Torment */
+.torment-pick {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 12px;
+}
+.torment-pick.on {
+  border-color: rgba(244, 63, 94, 0.6);
+  box-shadow: 0 0 20px rgba(244, 63, 94, 0.2);
+}
+.torment-pick .rk {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.torment-pick .rk b {
+  min-width: 120px;
+  text-align: center;
+  font-family: 'Cinzel', serif;
+  color: #fb7185;
+}
+.torment-pick .rk button {
+  width: 30px;
+  height: 30px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 16px;
+}
+.torment-pick .rk button:disabled {
+  opacity: 0.3;
+}
+
+/* run: cards, chest, HUD */
+.card:nth-child(6) {
+  animation-delay: 0.4s;
+}
+.card.overdrive {
+  border-color: #fb7185;
+  box-shadow: 0 0 22px rgba(251, 113, 133, 0.3);
+}
+.card.ability-card {
+  border-color: rgba(125, 211, 252, 0.6);
+}
+.boon-card.rar-cursed {
+  border-color: #be123c;
+  box-shadow: 0 0 26px rgba(190, 18, 60, 0.4);
+}
+.boon-card.rar-legendary {
+  border-color: #fde68a;
+  box-shadow: 0 0 32px rgba(253, 230, 138, 0.45);
+}
+.reward.evo.apex {
+  border-color: #fde68a;
+  box-shadow: 0 0 36px rgba(253, 230, 138, 0.55);
+  background: linear-gradient(135deg, rgba(90, 60, 10, 0.9), rgba(12, 12, 22, 0.95));
+}
+#slots .s.apex {
+  border-color: #fde68a;
+  box-shadow:
+    0 0 12px #fde68a,
+    0 0 4px #fb923c inset;
+}
+#slots .s.over {
+  border-color: #fb7185;
+}
+#slots .s.rank {
+  border-color: rgba(125, 211, 252, 0.7);
+}
+#active .ab.art {
+  width: 56px;
+  height: 56px;
+  border-color: rgba(192, 132, 252, 0.4);
+}
+#active .ab.art.ready {
+  border-color: #e9d5ff;
+  box-shadow: 0 0 20px rgba(192, 132, 252, 0.6);
+}
+#active .ab.sealed {
+  filter: grayscale(1);
+  opacity: 0.5;
+  animation: none;
+}
+#active .abw.hidden {
+  display: none;
 }

@@ -11,10 +11,13 @@ import { U } from './util';
 const DEADZONE = 0.2;
 const DASH_KEYS = new Set(['Space', 'ShiftLeft', 'ShiftRight']);
 const ACTIVE_KEYS = new Set(['KeyE', 'KeyQ']);
+const ART_KEYS = new Set(['KeyR', 'KeyF']);
 /** Standard-mapping buttons that dash: A, LB, LT. */
 const DASH_BUTTONS = [0, 4, 6];
 /** Standard-mapping buttons that trigger the ability: X, RB, RT. */
 const ACTIVE_BUTTONS = [2, 5, 7];
+/** Standard-mapping button that casts the Soul Art: Y. */
+const ART_BUTTONS = [3];
 /** Standard-mapping Start button. */
 const START_BUTTON = 9;
 /** Standard-mapping Back/Select button. */
@@ -24,7 +27,9 @@ export class InputManager implements InputSource {
   private keys = new Set<string>();
   private activeQueued = false;
   private dashQueued = false;
+  private artQueued = false;
   private padActiveHeld = false;
+  private padArtHeld = false;
   private padDashHeld = false;
   private padStartHeld = false;
   private padMapHeld = false;
@@ -44,6 +49,7 @@ export class InputManager implements InputSource {
       if (isTyping(e.target)) return;
       if (!e.repeat && ACTIVE_KEYS.has(e.code)) this.activeQueued = true;
       if (!e.repeat && DASH_KEYS.has(e.code)) this.dashQueued = true;
+      if (!e.repeat && ART_KEYS.has(e.code)) this.artQueued = true;
       this.keys.add(e.code);
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
       if (e.code === 'KeyP' && !e.repeat) this.onPauseKey?.();
@@ -110,6 +116,9 @@ export class InputManager implements InputSource {
     const act = ACTIVE_BUTTONS.some((i) => gp.buttons[i]?.pressed);
     if (act && !this.padActiveHeld) this.activeQueued = true;
     this.padActiveHeld = act;
+    const art = ART_BUTTONS.some((i) => gp.buttons[i]?.pressed);
+    if (art && !this.padArtHeld) this.artQueued = true;
+    this.padArtHeld = art;
     const dash = DASH_BUTTONS.some((i) => gp.buttons[i]?.pressed);
     if (dash && !this.padDashHeld) this.dashQueued = true;
     this.padDashHeld = dash;
@@ -159,6 +168,17 @@ export class InputManager implements InputSource {
     return v;
   }
 
+  consumeArt(): boolean {
+    const v = this.artQueued;
+    this.artQueued = false;
+    return v;
+  }
+
+  /** Queue a Soul Art cast (on-screen button). */
+  pressArt(): void {
+    this.artQueued = true;
+  }
+
   /** Queue an ability activation (on-screen button). */
   pressActive(): void {
     this.activeQueued = true;
@@ -173,6 +193,7 @@ export class InputManager implements InputSource {
   flush(): void {
     this.activeQueued = false;
     this.dashQueued = false;
+    this.artQueued = false;
   }
 }
 

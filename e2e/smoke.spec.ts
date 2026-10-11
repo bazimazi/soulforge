@@ -34,7 +34,7 @@ test('boots to the title screen with the selected renderer', async ({ page, base
 test('meta screens open and close', async ({ page, baseURL }) => {
   const errors = trackErrors(page);
   await boot(page, baseURL!);
-  for (const id of ['talentsBtn', 'forgeBtn', 'codexBtn', 'settingsBtn']) {
+  for (const id of ['talentsBtn', 'ascendBtn', 'forgeBtn', 'codexBtn', 'settingsBtn']) {
     await page.click('#' + id);
     await expect(page.locator('#backBtn')).toBeVisible();
     // visit every tab on tabbed screens

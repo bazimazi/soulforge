@@ -2,9 +2,13 @@
 import { LocalStore, type KeyValueStore } from '../core/storage';
 import { CHARACTERS, CHAR_BY_ID, FLAG_STATS } from '../data/characters';
 import { BESTIARY_STAT, BESTIARY_TIERS, BOSS_STAT, BOSS_TIERS, MILESTONES, PARAGON, charXpFor } from '../data/codex';
-import { AFFIX, ANVIL, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SIGILS, SLOT_BY_ID, UNIQUE_BY_ID, anvilCost, craftCost, craftItem, forgeLevelPerks, forgeXpFor, itemStats, metaRng, reforgeCost, salvageValue, upgradeCost } from '../data/forge';
+import { DAILY_BONUS, DAILY_REROLLS, applyRun, dayNumber, genDaily, genReplacement, genWeekly, weekNumber, type Contract, type ContractContext } from '../data/contracts';
+import { AFFIX, ANVIL, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SET_BY_ID, SIGILS, SLOT_BY_ID, UNIQUE_BY_ID, anvilCost, craftCost, craftItem, forgeLevelPerks, forgeXpFor, itemStats, metaRng, reforgeCost, salvageValue, setCounts, upgradeCost } from '../data/forge';
 import type { AnvilDef, Cost, Item, Reward, SigilDef, TransmuteRecipe } from '../data/forge';
 import { STAGES } from '../data/passives';
+import { ASCENSIONS, ASCENSION_PER_RANK, ASCENSION_STAR_POINTS, MASTERY_DMG_PER_LEVEL, MASTERY_MAX, MAX_ASCENSION, TORMENT_CLEAR, TORMENT_FIRST, TORMENT_MAX, masteryXpFor, masteryXpFromDamage, soulRankPoints, soulXpFor, type AscensionDef, type AscensionFeat } from '../data/progression';
+import { ART_BY_ID, ART_MAX_LEVEL, SOUL_ARTS, artUpgradeCost } from '../data/soularts';
+import { STARWEB_RESPEC_GOLD, STAR_BY_ID, starConnected, starReachable } from '../data/starweb';
 import { CHRONICLE, type ChronicleChapter } from '../data/story';
 import { WEAPONS } from '../data/weapons';
 import type { Flags, Materials, MetaBonuses, RunSummary, StatBag, TalentNode } from '../game/types';
@@ -17,7 +21,7 @@ import type { Flags, Materials, MetaBonuses, RunSummary, StatBag, TalentNode } f
 export const SAVE_KEY = 'soulforge_save_v1';
 /** Last unreadable save, or the save that an import replaced. */
 export const BACKUP_KEY = 'soulforge_save_backup';
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 /** Coalescing window for `Save.save()`. */
 export const SAVE_DEBOUNCE_MS = 250;
 
@@ -36,6 +40,10 @@ export interface CharSave {
   bestLevel: number;
   /** Codex chapter index → claimed. */
   chapters: Record<number, boolean>;
+  /** v4: Champion Ascension rank (0–10). */
+  ascension: number;
+  /** v4: highest Torment tier at which this champion survived 15:00. */
+  bestTorment: number;
 }
 
 export interface WeaponCodexEntry {
@@ -76,6 +84,11 @@ export interface LifetimeStats {
   bestCombo: number;
   reactions: number;
   shrines: number;
+  /** v4 */
+  apotheoses: number;
+  contracts: number;
+  bestTorment: number;
+  artUses: number;
 }
 
 export interface StageProgress {
@@ -106,6 +119,27 @@ export interface ForgeProgress {
   level: number;
 }
 
+/** v4: a level track (Soul Rank, Weapon Mastery): `xp` is progress into the current `level`. */
+export interface XpTrack {
+  xp: number;
+  level: number;
+}
+
+/** v4: Night Contracts. */
+export interface ContractsSave {
+  /** UTC day / week the current contracts were rolled for. */
+  day: number;
+  week: number;
+  list: Contract[];
+  weekly: Contract | null;
+  /** Rerolls left today. */
+  rerolls: number;
+  /** Rerolls made (salts the replacement roll). */
+  salt: number;
+  /** Today's all-three bonus claimed. */
+  bonus: boolean;
+}
+
 export interface SaveData {
   v: number;
   gold: number;
@@ -131,10 +165,23 @@ export interface SaveData {
   notices: string[];
   /** v3: narrative progress — prologue shown, chronicle chapters read. */
   story: { prologue: boolean; read: Record<string, boolean> };
+  /** v4: account level (all champions feed it). `level` is the Soul Rank. */
+  soul: XpTrack;
+  /** v4: lit Starweb stars. */
+  starweb: Record<string, boolean>;
+  /** v4: weapon id → Weapon Mastery. */
+  masteries: Record<string, XpTrack>;
+  /** v4: Soul Art id → level (0 / missing = locked) and the one equipped ('' = none). */
+  arts: Record<string, number>;
+  art: string;
+  /** v4: stage id → highest Torment tier survived for 15:00 there. */
+  torment: { best: Record<string, number> };
+  lastTorment: number;
+  contracts: ContractsSave;
 }
 
 export interface UnlockEvent {
-  type: 'char' | 'stage' | 'milestone' | 'chapter' | 'story';
+  type: 'char' | 'stage' | 'milestone' | 'chapter' | 'story' | 'art' | 'torment';
   id: string;
   idx?: number;
   text: string;
@@ -142,17 +189,40 @@ export interface UnlockEvent {
 
 export type CraftResult = { item: Item; err?: undefined } | { err: string; item?: undefined };
 
+/** What a finished run did to the long-term tracks (shown on the game-over screen). */
+export interface RunRecord {
+  levelUps: number;
+  unlocks: UnlockEvent[];
+  /** Soul XP gained and Soul Ranks gained. */
+  soulXp: number;
+  soulUps: number;
+  /** Weapon id → Mastery levels gained this run. */
+  masteryUps: Record<string, number>;
+  /** Contracts this run completed. */
+  contractsDone: Contract[];
+  /** New Torment tier unlocked on the run's stage (0 = none). */
+  tormentUnlocked: number;
+}
+
 export function defaults(): SaveData {
   return {
-    v: SAVE_VERSION, gold: 0, embers: 0, mats: { iron: 0, dust: 0, crystal: 0, star: 0 },
+    v: SAVE_VERSION, gold: 0, embers: 0, mats: { iron: 0, dust: 0, crystal: 0, star: 0, eclipse: 0 },
     chars: {}, anvil: {}, forge: { xp: 0, level: 1 }, items: [], equipped: {}, sigils: {},
     codex: { enemies: {}, bosses: {}, weapons: {}, claimed: {}, uniques: {}, boons: {}, reactions: {} },
-    stats: { runs: 0, kills: 0, bossKills: 0, bestTime: 0, bestLevel: 0, evolves: 0, goldEarned: 0, legendaries: 0, bestHeat10: 0, totalTime: 0, elites: 0, bestCombo: 0, reactions: 0, shrines: 0 },
+    stats: { runs: 0, kills: 0, bossKills: 0, bestTime: 0, bestLevel: 0, evolves: 0, goldEarned: 0, legendaries: 0, bestHeat10: 0, totalTime: 0, elites: 0, bestCombo: 0, reactions: 0, shrines: 0, apotheoses: 0, contracts: 0, bestTorment: 0, artUses: 0 },
     stages: { unlocked: ['ashen'], best: {} },
     omens: {}, lastChar: 'kael', lastStage: 'ashen',
     settings: { sfx: 0.6, music: 0.35, shake: 1, dmgNumbers: true, fps: false, quality: 1, reducedMotion: false, postfx: true, dmgMeter: true, fxIntensity: 1 },
     seen: {}, notices: [],
     story: { prologue: false, read: {} },
+    soul: { xp: 0, level: 1 },
+    starweb: {},
+    masteries: {},
+    arts: {},
+    art: '',
+    torment: { best: {} },
+    lastTorment: 0,
+    contracts: { day: -1, week: -1, list: [], weekly: null, rerolls: 0, salt: 0, bonus: false },
   };
 }
 
@@ -202,6 +272,22 @@ const MIGRATIONS: Record<number, (d: RawObject) => RawObject> = {
     const story = isPlainObject(d.story) ? d.story : { prologue: isPlainObject(d.stats) && Number(d.stats.runs) > 0, read: {} };
     return { ...d, story, v: 3 };
   },
+  // v3 → v4: the long-term tracks. Veterans keep their history: Soul XP starts at everything their
+  // champions have ever earned, and each weapon's Mastery at twice the XP of its best run. Ranks and
+  // levels are settled from the XP on load (Save.normalize).
+  3: (d) => {
+    let xp = 0;
+    if (isPlainObject(d.chars)) for (const c of Object.values(d.chars)) {
+      if (!isPlainObject(c)) continue;
+      const L = Math.min(1000, Math.max(1, Math.floor(Number(c.level) || 1)));
+      for (let i = 1; i < L; i++) xp += charXpFor(i);
+      xp += Math.max(0, Number(c.xp) || 0);
+    }
+    const masteries: Record<string, XpTrack> = {};
+    const weapons = isPlainObject(d.codex) && isPlainObject(d.codex.weapons) ? d.codex.weapons : {};
+    for (const [id, w] of Object.entries(weapons)) if (isPlainObject(w) && Number(w.dmg) > 0) masteries[id] = { xp: masteryXpFromDamage(Number(w.dmg)) * 2, level: 0 };
+    return { ...d, soul: { xp, level: 1 }, masteries, v: 4 };
+  },
 };
 
 /** Version a raw save claims to be (saves from before versioning count as v1). */
@@ -247,7 +333,24 @@ function decodeBase64(b64: string): string {
 /* Persistence                                                        */
 /* ------------------------------------------------------------------ */
 
-const MAT_KEYS = ['iron', 'dust', 'crystal', 'star'] as const;
+const MAT_KEYS = ['iron', 'dust', 'crystal', 'star', 'eclipse'] as const;
+
+function isTrack(v: unknown): v is XpTrack {
+  return isPlainObject(v) && typeof v.xp === 'number' && Number.isFinite(v.xp) && typeof v.level === 'number' && Number.isFinite(v.level);
+}
+/** Roll surplus XP into levels (`need(L)` = XP from L to L + 1), up to `cap`. */
+function settle(t: XpTrack, need: (L: number) => number, cap: number): number {
+  let ups = 0;
+  t.level = Math.max(1, Math.floor(t.level)) || 1;
+  if (cap !== Infinity) t.level = Math.min(t.level, cap);
+  t.xp = Math.max(0, t.xp);
+  while (t.level < cap && t.xp >= need(t.level)) { t.xp -= need(t.level); t.level++; ups++; }
+  if (t.level >= cap) t.xp = 0;
+  return ups;
+}
+function isContract(v: unknown): v is Contract {
+  return isPlainObject(v) && typeof v.id === 'string' && typeof v.kind === 'string' && typeof v.target === 'number' && typeof v.progress === 'number' && isPlainObject(v.reward) && (v.ref === undefined || typeof v.ref === 'string');
+}
 
 let store: KeyValueStore = new LocalStore();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -285,10 +388,20 @@ const Save = {
     this.normalize();
     return this.data;
   },
-  /** Ensure every character has a record and the starters are unlocked. */
+  /** Ensure every character has a record and the starters are unlocked; settle XP tracks; drop malformed entries. */
   normalize(): void {
+    const d = this.data;
     CHARACTERS.forEach((c) => this.charData(c.id));
-    this.data.chars.kael!.unlocked = this.data.chars.lyra!.unlocked = this.data.chars.talon!.unlocked = true;
+    d.chars.kael!.unlocked = d.chars.lyra!.unlocked = d.chars.talon!.unlocked = true;
+    if (!isTrack(d.soul)) d.soul = { xp: 0, level: 1 };
+    settle(d.soul, soulXpFor, Infinity);
+    for (const id in d.masteries) { const m = d.masteries[id]; if (!isTrack(m) || !WEAPONS[id]) { delete d.masteries[id]; continue; } settle(m, masteryXpFor, MASTERY_MAX); }
+    for (const id in d.starweb) if (!STAR_BY_ID[id] || d.starweb[id] !== true) delete d.starweb[id];
+    for (const id in d.arts) if (!ART_BY_ID[id] || typeof d.arts[id] !== 'number') delete d.arts[id];
+    if (d.art && !(d.arts[d.art]! >= 1)) d.art = '';
+    const cs = d.contracts;
+    cs.list = Array.isArray(cs.list) ? cs.list.filter(isContract) : [];
+    if (cs.weekly != null && !isContract(cs.weekly)) cs.weekly = null;
   },
   /** Request a write. Rapid calls coalesce into one write ~{@link SAVE_DEBOUNCE_MS} later. */
   save(): void {
@@ -337,6 +450,7 @@ const Save = {
     if (c.unlocked == null) c.unlocked = false;
     c.xp = c.xp || 0; c.level = c.level || 1; c.talents = c.talents || {}; c.paragon = c.paragon || {};
     c.runs = c.runs || 0; c.kills = c.kills || 0; c.bosses = c.bosses || 0; c.bestTime = c.bestTime || 0; c.bestLevel = c.bestLevel || 0; c.chapters = c.chapters || {};
+    c.ascension = Math.min(MAX_ASCENSION, Math.max(0, Math.floor(Number(c.ascension) || 0))); c.bestTorment = c.bestTorment || 0;
     return c;
   },
   /* ---------- character xp / talents ---------- */
@@ -348,11 +462,14 @@ const Save = {
   talentPointsUsed(id: string): number { const c = this.charData(id); let n = 0; for (const k in c.talents) n += c.talents[k]!; for (const k in c.paragon) n += c.paragon[k]!; return n; },
   talentPointsFree(id: string): number { const c = this.charData(id); return c.level - 1 - this.talentPointsUsed(id); },
   branchPoints(id: string, branchId: string): number { const c = this.charData(id); const def = CHAR_BY_ID[id]!; let n = 0; def.talents.forEach((b) => { if (b.id === branchId) b.nodes.forEach((nd) => (n += c.talents[nd.id] || 0)); }); return n; },
-  nodeAvailable(id: string, node: TalentNode): boolean { const pts = this.branchPoints(id, node.branch); return pts >= node.tier * 4; },
+  /** Points a node needs in its branch. */
+  nodeReq(node: TalentNode): number { return node.req ?? node.tier * 4; },
+  nodeAvailable(id: string, node: TalentNode): boolean { return this.branchPoints(id, node.branch) >= this.nodeReq(node) && this.charData(id).ascension >= (node.asc ?? 0); },
   buyTalent(id: string, node: TalentNode): string | null {
     const c = this.charData(id);
     if (this.talentPointsFree(id) <= 0) return 'No talent points.';
-    if (!this.nodeAvailable(id, node)) return 'Requires ' + node.tier * 4 + ' points in this branch.';
+    if (c.ascension < (node.asc ?? 0)) return 'Requires Ascension ' + ASCENSIONS[(node.asc ?? 1) - 1]!.numeral + '.';
+    if (!this.nodeAvailable(id, node)) return 'Requires ' + this.nodeReq(node) + ' points in this branch.';
     if ((c.talents[node.id] || 0) >= node.max) return 'Maxed.';
     c.talents[node.id] = (c.talents[node.id] || 0) + 1; this.save(); return null;
   },
@@ -393,6 +510,13 @@ const Save = {
     CHRONICLE.forEach((ch) => {
       if (this.chronicleUnlocked(ch) && !d.seen['lore_' + ch.id]) { d.seen['lore_' + ch.id] = true; out.push({ type: 'story', id: ch.id, text: 'The Long Night — a new chapter: ' + ch.title }); }
     });
+    // free Soul Arts arrive with Soul Rank; the others announce themselves once they can be bought
+    SOUL_ARTS.forEach((a) => {
+      if ((d.arts[a.id] || 0) >= 1 || this.soulRank() < a.rank) return;
+      const free = !Object.keys(a.cost).length;
+      if (free) { d.arts[a.id] = 1; if (!d.art) d.art = a.id; }
+      if (!d.seen['art_' + a.id]) { d.seen['art_' + a.id] = true; out.push({ type: 'art', id: a.id, text: free ? 'Soul Art awakened: ' + a.name + ' (R in a run)' : 'Soul Art available: ' + a.name }); }
+    });
     return out;
   },
   chapterMet(charId: string, i: number): boolean {
@@ -412,21 +536,172 @@ const Save = {
     const addAll = (o: StatBag, m = 1): void => { for (const k in o) add(k, o[k]! * m); };
     // anvil
     ANVIL.forEach((a) => { const r = d.anvil[a.id] || 0; if (r) add(a.stat, a.per * r); });
-    // talents
-    ch.talents.forEach((b) => b.nodes.forEach((n) => { const r = c.talents[n.id] || 0; if (!r) return; if (n.per) addAll(n.per, r); if (n.flag) { flags[n.flag] = true; if (FLAG_STATS[n.flag]) addAll(FLAG_STATS[n.flag]!); } }));
+    // talents (an Apex makes every rank in its branch count 50% more)
+    ch.talents.forEach((b) => {
+      const apex = b.nodes.some((n) => n.apex && (c.talents[n.id] || 0) > 0) ? 1.5 : 1;
+      b.nodes.forEach((n) => { const r = c.talents[n.id] || 0; if (!r) return; if (n.per) addAll(n.per, r * apex); if (n.flag) { flags[n.flag] = true; if (FLAG_STATS[n.flag]) addAll(FLAG_STATS[n.flag]!); } });
+    });
     PARAGON.forEach((p) => { const r = c.paragon[p.id] || 0; if (r) add(p.stat, p.per * r); });
     // codex chapters
     ch.codex.forEach((chap, i) => { if (!c.chapters[i]) return; const rw = chap.reward; if (rw.stats) addAll(rw.stats); if (rw.flag) { flags[rw.flag] = true; if (FLAG_STATS[rw.flag]) addAll(FLAG_STATS[rw.flag]!); } });
-    // equipment
-    for (const slot in d.equipped) { const it = d.items.find((x) => x.uid === d.equipped[slot]); if (!it) continue; addAll(itemStats(it)); if (it.unique) { const u = UNIQUE_BY_ID[it.unique]; if (u && u.flag) flags[u.flag] = true; } }
+    // equipment, and the sets its pieces belong to
+    const worn: Item[] = [];
+    for (const slot in d.equipped) { const it = d.items.find((x) => x.uid === d.equipped[slot]); if (!it) continue; worn.push(it); addAll(itemStats(it)); if (it.unique) { const u = UNIQUE_BY_ID[it.unique]; if (u && u.flag) flags[u.flag] = true; } }
+    const sets = setCounts(worn);
+    for (const id in sets) for (const b of SET_BY_ID[id]!.bonuses) if (sets[id]! >= b.n) { if (b.stats) addAll(b.stats); if (b.flag) flags[b.flag] = true; }
+    // the Starweb (account-wide)
+    for (const id in d.starweb) { const s = STAR_BY_ID[id]; if (!s || !d.starweb[id]) continue; if (s.stats) addAll(s.stats); if (s.flag) flags[s.flag] = true; }
+    // Champion Ascension
+    for (const a of ASCENSIONS) { if (a.rank > c.ascension) break; addAll(ASCENSION_PER_RANK); if (a.stats) addAll(a.stats); if (a.flag) flags[a.flag] = true; }
     // sigils
     SIGILS.forEach((s) => { if (!d.sigils[s.id]) return; if (s.stats) addAll(s.stats); if (s.flag) flags[s.flag] = true; });
     // bestiary / boss codex bonuses
     for (const id in d.codex.enemies) { const t = this.bestiaryTier(id); if (t) addAll(BESTIARY_STAT, t); }
     for (const id in d.codex.bosses) { const t = this.bossTier(id); if (t) addAll(BOSS_STAT, t); }
-    // armory mastery
+    // armory stages and Weapon Mastery levels
+    const weaponLevels: Record<string, number> = {};
     for (const wid in d.codex.weapons) { const w = d.codex.weapons[wid]!; let m = 0; if (w.maxed) m += 0.05; if (w.evolved) m += 0.1; if (m) weaponMastery[wid] = m; }
-    return { stats, flags, weaponMastery };
+    for (const wid in d.masteries) { const L = d.masteries[wid]!.level; if (L > 0) { weaponLevels[wid] = L; weaponMastery[wid] = (weaponMastery[wid] || 0) + L * MASTERY_DMG_PER_LEVEL; } }
+    return { stats, flags, weaponMastery, weaponLevels, ascension: c.ascension };
+  },
+  /* ---------- Soul Rank & the Starweb ---------- */
+  soulRank(): number { return this.data.soul.level; },
+  addSoulXp(xp: number): number { const s = this.data.soul; s.xp += Math.max(0, xp); return settle(s, soulXpFor, Infinity); },
+  /** Total Starweb points: Soul Rank plus every Ascension rank across the roster. */
+  starPoints(): number { let asc = 0; for (const id in this.data.chars) asc += this.charData(id).ascension; return soulRankPoints(this.soulRank()) + asc * ASCENSION_STAR_POINTS; },
+  starsLit(): number { let n = 0; for (const id in this.data.starweb) if (this.data.starweb[id]) n++; return n; },
+  starPointsFree(): number { return this.starPoints() - this.starsLit(); },
+  lightStar(id: string): string | null {
+    const d = this.data, s = STAR_BY_ID[id];
+    if (!s || s.kind === 'origin') return 'Unknown star.';
+    if (d.starweb[id]) return 'Already lit.';
+    if (this.starPointsFree() <= 0) return 'No Starweb points. Raise your Soul Rank or ascend a champion.';
+    if (!starReachable(id, d.starweb)) return 'Light a neighbouring star first.';
+    d.starweb[id] = true; this.save(); return null;
+  },
+  /** Unlight one star (free) if nothing else depends on it. */
+  unlightStar(id: string): string | null {
+    const d = this.data;
+    if (!d.starweb[id]) return 'Not lit.';
+    const keep = starConnected(d.starweb, id);
+    for (const k in d.starweb) if (d.starweb[k] && k !== id && !keep.has(k)) return 'Other lit stars depend on this one.';
+    delete d.starweb[id]; this.save(); return null;
+  },
+  starRespecCost(): number { return this.starsLit() * STARWEB_RESPEC_GOLD; },
+  respecStarweb(): string | null {
+    const cost = this.starRespecCost();
+    if (!cost) return 'Nothing to reset.';
+    if (this.data.gold < cost) return 'Not enough gold.';
+    this.pay({ gold: cost }); this.data.starweb = {}; this.save(); return null;
+  },
+  /* ---------- Champion Ascension ---------- */
+  featMet(charId: string, f: AscensionFeat): boolean {
+    const c = this.charData(charId);
+    switch (f.kind) {
+      case 'time': return c.bestTime >= f.v;
+      case 'bosses': return c.bosses >= f.v;
+      case 'level': return c.bestLevel >= f.v;
+      case 'kills': return c.kills >= f.v;
+      case 'torment': return c.bestTorment >= f.v;
+    }
+  },
+  featProgress(charId: string, f: AscensionFeat): number {
+    const c = this.charData(charId);
+    return f.kind === 'time' ? c.bestTime : f.kind === 'bosses' ? c.bosses : f.kind === 'level' ? c.bestLevel : f.kind === 'kills' ? c.kills : c.bestTorment;
+  },
+  nextAscension(charId: string): AscensionDef | null { return ASCENSIONS[this.charData(charId).ascension] ?? null; },
+  /** Why `charId` can't ascend yet (empty when it can). */
+  ascendBlockers(charId: string): string[] {
+    const c = this.charData(charId), a = this.nextAscension(charId), out: string[] = [];
+    if (!a) return ['Fully ascended.'];
+    if (!c.unlocked) out.push('Champion locked.');
+    if (c.level < a.level) out.push('Reach character level ' + a.level + '.');
+    if (!this.featMet(charId, a.feat)) out.push('Feat not yet achieved.');
+    if (!this.canAfford(a.cost)) out.push('Not enough resources.');
+    return out;
+  },
+  ascend(charId: string): string | null {
+    const a = this.nextAscension(charId), why = this.ascendBlockers(charId);
+    if (!a || why.length) return why[0] ?? 'Cannot ascend.';
+    this.pay(a.cost); this.charData(charId).ascension = a.rank; this.save(); return null;
+  },
+  /* ---------- Weapon Mastery ---------- */
+  mastery(wid: string): XpTrack { return this.data.masteries[wid] ?? { xp: 0, level: 0 }; },
+  masteryLevel(wid: string): number { return this.data.masteries[wid]?.level ?? 0; },
+  /** Add Mastery XP to a weapon; returns levels gained. */
+  addMasteryXp(wid: string, xp: number): number {
+    if (!WEAPONS[wid] || xp <= 0) return 0;
+    const m = this.data.masteries[wid] ??= { xp: 0, level: 0 };
+    if (m.level >= MASTERY_MAX) return 0;
+    m.xp += xp;
+    let ups = 0;
+    while (m.level < MASTERY_MAX && m.xp >= masteryXpFor(m.level)) { m.xp -= masteryXpFor(m.level); m.level++; ups++; }
+    if (m.level >= MASTERY_MAX) m.xp = 0;
+    return ups;
+  },
+  /* ---------- Soul Arts ---------- */
+  artLevel(id: string): number { return this.data.arts[id] || 0; },
+  buyArt(id: string): string | null {
+    const a = ART_BY_ID[id]; if (!a) return 'Unknown art.';
+    if (this.artLevel(id) >= 1) return 'Already known.';
+    if (this.soulRank() < a.rank) return 'Requires Soul Rank ' + a.rank + '.';
+    if (!this.canAfford(a.cost)) return 'Not enough resources.';
+    this.pay(a.cost); this.data.arts[id] = 1; if (!this.data.art) this.data.art = id; this.save(); return null;
+  },
+  upgradeArt(id: string): string | null {
+    const L = this.artLevel(id);
+    if (L < 1) return 'Not yet learned.';
+    if (L >= ART_MAX_LEVEL) return 'Mastered.';
+    const cost = artUpgradeCost(L); if (!this.canAfford(cost)) return 'Not enough resources.';
+    this.pay(cost); this.data.arts[id] = L + 1; this.save(); return null;
+  },
+  equipArt(id: string): void { if (id === '' || this.artLevel(id) >= 1) { this.data.art = id; this.save(); } },
+  /** The art to bring into a run (null when none is equipped). */
+  runArt(): { id: string; level: number } | null { const id = this.data.art; return id && this.artLevel(id) >= 1 ? { id, level: this.artLevel(id) } : null; },
+  /* ---------- Torment ---------- */
+  /** Highest Torment tier playable on a stage (0 = only Normal). */
+  tormentMax(stageId: string): number {
+    const d = this.data;
+    if ((d.stages.best[stageId] || 0) < TORMENT_FIRST) return 0;
+    return Math.min(TORMENT_MAX, 1 + (d.torment.best[stageId] || 0));
+  },
+  /** Highest Torment tier playable anywhere. */
+  tormentAnywhere(): number { let t = 0; for (const s of STAGES) t = Math.max(t, this.tormentMax(s.id)); return t; },
+  /* ---------- Night Contracts ---------- */
+  /** Wall clock for contracts (tests replace it). */
+  now: (): number => Date.now(),
+  contractContext(): ContractContext {
+    const d = this.data, charNames: Record<string, string> = {};
+    CHARACTERS.forEach((c) => (charNames[c.id] = c.name));
+    return { rank: this.soulRank(), chars: CHARACTERS.filter((c) => this.charData(c.id).unlocked).map((c) => c.id), stages: d.stages.unlocked.slice(), torment: this.tormentAnywhere(), charNames };
+  },
+  /** Roll today's / this week's contracts if the calendar moved on. Returns true if anything changed. */
+  refreshContracts(): boolean {
+    const cs = this.data.contracts, t = this.now(), day = dayNumber(t), week = weekNumber(t);
+    let changed = false;
+    if (cs.day !== day) { cs.day = day; cs.list = genDaily(day, this.contractContext()); cs.rerolls = DAILY_REROLLS; cs.bonus = false; cs.salt = 0; changed = true; }
+    if (cs.week !== week || !cs.weekly) { cs.week = week; cs.weekly = genWeekly(week, this.contractContext()); changed = true; }
+    if (changed) this.save();
+    return changed;
+  },
+  findContract(id: string): Contract | null { const cs = this.data.contracts; return cs.list.find((c) => c.id === id) ?? (cs.weekly && cs.weekly.id === id ? cs.weekly : null); },
+  claimContract(id: string): string | null {
+    const c = this.findContract(id);
+    if (!c) return 'No such contract.';
+    if (c.claimed) return 'Already claimed.';
+    if (c.progress < c.target) return 'Not complete.';
+    c.claimed = true; this.grant(c.reward); this.data.stats.contracts++; this.save(); return null;
+  },
+  dailyBonusReady(): boolean { const cs = this.data.contracts; return !cs.bonus && cs.list.length > 0 && cs.list.every((c) => c.claimed); },
+  claimDailyBonus(): string | null { if (!this.dailyBonusReady()) return 'Claim all three contracts first.'; this.data.contracts.bonus = true; this.grant(DAILY_BONUS); this.save(); return null; },
+  rerollContract(id: string): string | null {
+    const cs = this.data.contracts, i = cs.list.findIndex((c) => c.id === id);
+    if (i < 0) return 'Only daily contracts can be rerolled.';
+    if (cs.rerolls <= 0) return 'No rerolls left today.';
+    if (cs.list[i]!.claimed) return 'Already claimed.';
+    const next = genReplacement(cs.day, this.contractContext(), ++cs.salt, cs.list.map((c) => c.kind));
+    if (!next) return 'Nothing else to offer today.';
+    cs.list[i] = next; cs.rerolls--; this.save(); return null;
   },
   bestiaryTier(id: string): number { const k = this.data.codex.enemies[id] || 0; let t = 0; BESTIARY_TIERS.forEach((v) => { if (k >= v) t++; }); return t; },
   bossTier(id: string): number { const k = this.data.codex.bosses[id] || 0; let t = 0; BOSS_TIERS.forEach((v) => { if (k >= v) t++; }); return t; },
@@ -453,7 +728,7 @@ const Save = {
     if (d.items.length >= 60) return { err: 'Inventory full (60). Salvage something.' };
     this.pay(full);
     const luck = 0;
-    const item = craftItem(slotId, L, { minRarity: cat.minRarity, luck });
+    const item = craftItem(slotId, L, { minRarity: cat.minRarity, luck, set: cat.set });
     item.spent = cost.gold;
     d.items.push(item);
     if (RARITY_BY_ID[item.rarity]!.index >= 4) d.stats.legendaries++;
@@ -517,11 +792,15 @@ const Save = {
       case 'stageTime': return (d.stages.best[u.ref] || 0) >= u.v;
       case 'forge': return d.forge.level >= u.v;
       case 'chars': return Object.values(d.chars).filter((c) => c.unlocked).length >= u.v;
+      case 'soul': return this.soulRank() >= u.v;
+      case 'ascension': return Object.keys(d.chars).some((id) => this.charData(id).ascension >= u.v);
+      case 'torment': return d.stats.bestTorment >= u.v;
     }
   },
   /* ---------- run results ---------- */
-  recordRun(r: RunSummary): { levelUps: number; unlocks: UnlockEvent[] } {
+  recordRun(r: RunSummary): RunRecord {
     const d = this.data, c = this.charData(r.charId);
+    const tormentBefore = this.tormentMax(r.stageId);
     d.stats.runs++; c.runs++;
     d.stats.kills += r.kills; c.kills += r.kills;
     d.stats.bossKills += r.bossKills; c.bosses += r.bossKills;
@@ -533,18 +812,33 @@ const Save = {
     d.stats.bestCombo = Math.max(d.stats.bestCombo, r.bestCombo || 0);
     d.stats.reactions += r.reactions || 0;
     d.stats.shrines += r.shrines || 0;
+    d.stats.apotheoses += r.apotheoses || 0;
+    d.stats.artUses += r.artUses || 0;
+    if ((r.torment || 0) > 0 && r.time >= TORMENT_CLEAR) {
+      d.torment.best[r.stageId] = Math.max(d.torment.best[r.stageId] || 0, r.torment);
+      c.bestTorment = Math.max(c.bestTorment, r.torment); d.stats.bestTorment = Math.max(d.stats.bestTorment, r.torment);
+    }
     for (const b of r.boons || []) d.codex.boons[b] = true;
     if (r.time >= 600) d.stats.bestHeat10 = Math.max(d.stats.bestHeat10, r.heat);
     d.stages.best[r.stageId] = Math.max(d.stages.best[r.stageId] || 0, r.time);
-    this.grant({ gold: r.gold, embers: r.embers, iron: r.mats.iron, dust: r.mats.dust, crystal: r.mats.crystal, star: r.mats.star });
+    this.grant({ gold: r.gold, embers: r.embers, iron: r.mats.iron, dust: r.mats.dust, crystal: r.mats.crystal, star: r.mats.star, eclipse: r.mats.eclipse || 0 });
     for (const id in r.enemyKills) d.codex.enemies[id] = (d.codex.enemies[id] || 0) + r.enemyKills[id]!;
     for (const id in r.bossKillsBy) d.codex.bosses[id] = (d.codex.bosses[id] || 0) + r.bossKillsBy[id]!;
     r.weapons.forEach((w) => { const e = d.codex.weapons[w.id] || (d.codex.weapons[w.id] = {}); const def = WEAPONS[w.id]; e.found = true; if (def && w.level >= def.max) e.maxed = true; if (w.evolved) e.evolved = true; e.dmg = Math.max(e.dmg || 0, w.dmg || 0); });
     const ups = this.addCharXp(r.charId, r.charXp);
+    // long-term tracks
+    const soulUps = this.addSoulXp(r.charXp);
+    const masteryUps: Record<string, number> = {};
+    for (const w of r.weapons) { const n = this.addMasteryXp(w.id, masteryXpFromDamage(w.dmg || 0)); if (n) masteryUps[w.id] = n; }
+    this.refreshContracts();
+    const contractsDone: Contract[] = [];
+    for (const k of [...d.contracts.list, ...(d.contracts.weekly ? [d.contracts.weekly] : [])]) if (applyRun(k, r)) contractsDone.push(k);
+    const tormentAfter = this.tormentMax(r.stageId);
     const unlocks = this.checkUnlocks();
+    if (tormentAfter > tormentBefore) unlocks.push({ type: 'torment', id: r.stageId, text: 'Torment ' + tormentAfter + ' unlocked in ' + (STAGES.find((s) => s.id === r.stageId)?.name ?? r.stageId) });
     this.save();
     this.flush();
-    return { levelUps: ups, unlocks };
+    return { levelUps: ups, unlocks, soulXp: Math.max(0, r.charXp), soulUps, masteryUps, contractsDone, tormentUnlocked: tormentAfter > tormentBefore ? tormentAfter : 0 };
   },
 };
 

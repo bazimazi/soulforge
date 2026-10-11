@@ -3,6 +3,7 @@ import { U } from '../core/util';
 import { rand } from '../core/rng';
 import type { Game } from '../game/game';
 import type { Enemy, Player, Projectile, Weapon, WeaponDef, WeaponDefInput, WeaponLevelDelta, WeaponStats } from '../game/types';
+import { APOTHEOSIS } from './progression';
 
 export const WEAPONS: Record<string, WeaponDef> = {};
 export const registerWeapon = (def: WeaponDefInput): WeaponDef => { def.max = def.max || 8; WEAPONS[def.id] = def as WeaponDef; return def as WeaponDef; };
@@ -464,6 +465,106 @@ registerWeapon({
   },
 });
 
+/* ================= FOURTH ROUND: each evolves with one of the new passives ================= */
+
+registerWeapon({
+  id: 'ember_chakram', name: 'Ember Chakram', icon: { g: 'ring', c: '#ff9a3c' }, tags: ['fire', 'physical'],
+  desc: 'Hurls burning rings that carve outward and boomerang back, setting everything they cut alight.',
+  base: { dmg: 15, cd: 1.7, amount: 1, speed: 400, pierce: -1, area: 1, duration: 0.7, burn: 0.3, knock: 0.6 },
+  levels: [{ dmg: 6 }, { amount: 1 }, { burn: 0.2 }, { area: 0.2 }, { dmg: 9, cd: -0.1 }, { amount: 1 }, { dmg: 14, burn: 0.3 }],
+  evo: { with: 'ember_sigil', name: 'Solar Wheel', icon: { g: 'sun', c: '#ffb347' }, desc: 'The rings become blazing suns that leave a trail of fire wherever they roll.', stats: { dmgMul: 1.5, areaMul: 1.25, amount: 1 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const base = H.aim(g, p, 460);
+    for (let i = 0; i < s.amount; i++) {
+      const a = base + (i - (s.amount - 1) / 2) * 0.45;
+      g.after(i * 0.1, () => {
+        const pr = g.spawnProj({
+          x: p.x, y: p.y, angle: a, speed: s.speed, r: 14 * s.area, dmg: s.dmg, pierce: -1, hitCd: 0.4, life: s.duration * 2 + 0.6, weapon: w, knock: s.knock,
+          sprite: { kind: 'axe', color: w.evolved ? '#ffd27a' : '#ff9a3c', len: 30 * s.area, wid: 8 * s.area }, spin: 16, trail: '#ff7a3c', boomerang: { t: s.duration }, light: 60,
+          statuses: [{ type: 'burn', dur: 3, dps: s.dmg * s.burn }],
+        });
+        if (w.evolved) for (let k = 1; k <= 6; k++) g.after(k * 0.2, () => { if (!pr.dead) g.spawnZone({ x: pr.x, y: pr.y, r: 34 * s.area, dur: 1.6, dmg: s.dmg * 0.2, tick: 0.3, weapon: w, color: '#ff7a3c', kind: 'fire', burn: 0.3 }); });
+      });
+    }
+    g.sfx('slash');
+  },
+});
+
+registerWeapon({
+  id: 'glacial_spire', name: 'Glacial Spire', icon: { g: 'snowflake', c: '#7dd3fc' }, tags: ['ice', 'earth'],
+  desc: 'Spires of ice erupt from the ground in a line toward the nearest enemy, chilling everything they spear.',
+  base: { dmg: 20, cd: 2.0, amount: 1, area: 1, slow: 0.35, duration: 2, range: 1 },
+  levels: [{ dmg: 8 }, { range: 0.25 }, { amount: 1 }, { slow: 0.1, dmg: 6 }, { cd: -0.12 }, { area: 0.25 }, { amount: 1, dmg: 16 }],
+  evo: { with: 'frostbite', name: "Winter's Spine", icon: { g: 'snowflake', c: '#e0f2fe' }, desc: 'The spires freeze what they spear, and the last of each line shatters into a ring of ice.', stats: { dmgMul: 1.5, range: 0.3 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const tg = H.targets(g, p, s.amount, 520);
+    const n = Math.round(5 * s.range), gap = 40 * s.area;
+    const status = w.evolved ? { type: 'chill' as const, dur: s.duration, power: s.slow, stackFreeze: 2 } : { type: 'chill' as const, dur: s.duration, power: s.slow };
+    for (let i = 0; i < s.amount; i++) {
+      const t = tg[i % Math.max(1, tg.length)];
+      const a = (t ? Math.atan2(t.y - p.y, t.x - p.x) : H.facing(p)) + (tg.length > i ? 0 : (i - (s.amount - 1) / 2) * 0.5);
+      const ox = p.x, oy = p.y;
+      for (let k = 1; k <= n; k++) {
+        g.after(i * 0.12 + k * 0.06, () => {
+          const x = ox + Math.cos(a) * gap * k, y = oy + Math.sin(a) * gap * k;
+          g.spawnProj({ x, y, angle: a, speed: 0, r: 22 * s.area, dmg: s.dmg, pierce: -1, hitCd: 5, life: 0.45, weapon: w, knock: 0.8, sprite: { kind: 'spike', color: '#bae6fd', size: 16 * s.area }, statuses: [status] });
+          g.fx.burst(x, y, '#e0f2fe', 4, { speed: 90, life: 0.35 });
+          if (w.evolved && k === n) for (let j = 0; j < 8; j++) g.spawnProj({ x, y, angle: (j / 8) * U.TAU, speed: 320, r: 5, dmg: s.dmg * 0.4, pierce: 1, life: 0.45, weapon: w, sprite: { kind: 'shard', color: '#e0f2fe', len: 14, wid: 3 }, statuses: [{ type: 'chill', dur: 1.5, power: s.slow }] });
+        });
+      }
+    }
+    g.sfx('freeze');
+  },
+});
+
+registerWeapon({
+  id: 'wraith_banner', name: 'Wraith Banner', icon: { g: 'minion', c: '#a5b4fc' }, tags: ['summon', 'shadow'],
+  desc: 'Raises a war banner that calls spectral knights to fight at your side for a while.',
+  base: { dmg: 16, cd: 4.5, amount: 1, minions: 2, duration: 7, area: 1 },
+  levels: [{ minions: 1 }, { dmg: 6 }, { duration: 2 }, { minions: 1 }, { dmg: 9, cd: -0.15 }, { minions: 1 }, { dmg: 14, duration: 3 }],
+  evo: { with: 'tome', name: 'Legion of the Damned', icon: { g: 'skull', c: '#c7d2fe' }, desc: 'The knights march in greater numbers, strike harder, and burst in soulfire when they fall.', stats: { dmgMul: 1.5, minions: 3, durationMul: 1.4 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const max = s.minions + s.amount - 1, live = g.allies.filter((a) => a.weapon === w && !a.dead && !a.removed).length;
+    const dmg = s.dmg * (1 + p.stats.minionDmg);
+    const n = Math.min(w.evolved ? 4 : 3, max - live);
+    for (let i = 0; i < n; i++) {
+      const a = rand() * U.TAU;
+      g.spawnAlly({ kind: 'skeleton', x: p.x + Math.cos(a) * 30, y: p.y + Math.sin(a) * 30, color: w.evolved ? '#c7d2fe' : '#a5b4fc', life: s.duration, speed: 190, dmg, attackCd: 0.7, attackR: 34 * s.area, weapon: w, explode: w.evolved ? { r: 64, mult: 1.2 } : undefined });
+    }
+    if (n > 0) { g.fx.ring(p.x, p.y, 70, '#a5b4fc', { thin: true }); g.sfx('summon'); }
+  },
+});
+
+registerWeapon({
+  id: 'judgment_hammer', name: 'Judgment Hammer', icon: { g: 'hammer', c: '#fde68a' }, tags: ['holy', 'physical'],
+  desc: 'A colossal hammer of light falls on the toughest enemy nearby and stuns everything around the impact.',
+  base: { dmg: 45, cd: 3.2, amount: 1, area: 1, knock: 1.4 },
+  levels: [{ dmg: 15 }, { area: 0.2 }, { amount: 1 }, { dmg: 20 }, { cd: -0.12 }, { area: 0.25, dmg: 15 }, { amount: 1, dmg: 30 }],
+  evo: { with: 'seal', name: 'Hammer of the Dawn', icon: { g: 'hammer', c: '#fff7d6' }, desc: 'Every impact sends a ring of holy fire racing outward and smites elites and Heralds for a share of their health.', stats: { dmgMul: 1.5, areaMul: 1.2, amount: 1 } },
+  fire(g, w, s) {
+    const p = g.player;
+    const rank = (e: Enemy): number => e.hp * (e.boss ? 4 : e.elite ? 2 : 1);
+    const list = g.enemiesInRadius(p.x, p.y, 520).sort((a, b) => rank(b) - rank(a));
+    for (let i = 0; i < s.amount; i++) {
+      const t = list[i] ?? null;
+      const x = t ? t.x : p.x + U.rand(-160, 160), y = t ? t.y : p.y + U.rand(-160, 160), r = 85 * s.area;
+      g.fx.telegraphCircle(x, y, r, 0.5, '#fde68a');
+      g.after(0.5 + i * 0.12, () => {
+        g.explode(x, y, r, s.dmg, w, { knock: s.knock, color: '#fde68a' });
+        g.eachEnemyIn(x, y, r, (e) => g.applyStatus(e, 'stun', { dur: 0.8 }));
+        g.fx.shockwave(x, y, r * 1.5, 14); g.fx.shake(4);
+        if (w.evolved) {
+          g.nova(x, y, 170 * s.area, s.dmg * 0.5, w, { color: '#ffd27a', burn: 0.3, knock: 0.6 });
+          if (t && !t.dead && (t.elite || t.boss)) g.damageEnemy(t, t.maxHp * (t.boss ? 0.01 : 0.03), { weapon: w, quiet: true });
+        }
+      });
+    }
+  },
+});
+
 /* Compute effective weapon stats for the player */
 export const weaponStats = function (w: Weapon, p: Player): WeaponStats {
   const def = w.def;
@@ -487,6 +588,22 @@ export const weaponStats = function (w: Weapon, p: Player): WeaponStats {
       else s[k] = v as unknown as number; // boolean switch (e.g. permanent, freeze), read by the weapon's fire()
     }
   }
+  // Overdrive: levels past the max once evolved (+15% damage each; II/IV faster, III wider, V one more)
+  const od = w.evolved ? Math.max(0, w.level - def.max) : 0;
+  if (od) {
+    s.dmg *= 1 + 0.15 * od;
+    s.cd *= Math.pow(0.94, Math.floor(od / 2));
+    if (od >= 3) s.area *= 1.15;
+    if (od >= 5) s.amount += 1;
+  }
+  if (w.apex) s.dmg *= def.continuous ? APOTHEOSIS.continuousMul : APOTHEOSIS.dmgMul;
+  if (w.evolved && p.f.u_sunshard) s.dmg *= 1.1;
+  if (w.evolved && p.f.b_dawncrown) s.dmg *= 1.25;
+  // Weapon Mastery perks (the per-level damage arrives through weaponMastery below)
+  const ml = (p.weaponLevels && p.weaponLevels[def.id]) || 0;
+  if (ml >= 5) s.cd *= 0.95;
+  if (ml >= 15) s.area *= 1.1;
+  if (ml >= 25) s.amount += 1;
   const st = p.stats;
   s.dmg *= st.might * (1 + (p.weaponMastery[def.id] || 0));
   if (p.char.signature === def.id) s.dmg *= 1 + (st.sigDmg || 0);

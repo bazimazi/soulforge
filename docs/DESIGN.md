@@ -210,6 +210,66 @@ ones left more than ~2× the view behind simply crumble.
 - **Hit-stop.** Catching the Hoarder gets the same short slow-motion beat and zoom punch as an elite kill;
   no other global slow motion was added.
 
+## Fourth round — the long night ahead (progression)
+
+The first three rounds made a run deep. This one makes the _account_ deep: before it, a committed player
+could finish nearly every track (talents, anvil, sigils, codex) in a day or two. Every new track is long,
+most are endless, and they feed each other, so there is always a next goal at three horizons: this run,
+this week, this season. Data lives in `data/progression.ts`, `data/starweb.ts`, `data/soularts.ts`,
+`data/contracts.ts`; transactions in `meta/save.ts` (schema v4); run effects in `game/game.ts`; screens in
+`ui/progression.ts` (title → **Ascension**). Covered by `tests/progression.test.ts`.
+
+### Between runs
+
+| Track                  | Shape                                                                                                                                                                                                                                                                                                     | Horizon                    |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| **Soul Rank**          | Account level. Every run's character XP also feeds it, so all twelve champions push one rank (`soulXpFor(R) = 2500·R^0.9`). Each rank is a Starweb point.                                                                                                                                                 | Endless                    |
+| **Starweb**            | 84-star constellation graph shared by every champion: six constellations (Smith, Bulwark, Wanderer, Oracle, Tempest, Hollow Moon) and twelve bridges. A star lights only next to a lit one, so every keystone is a _path_. Single stars unlight free if nothing hangs from them; a full reset costs gold. | ~Soul Rank 70 + Ascensions |
+| **Champion Ascension** | Ten ranks per champion. Each needs a character level (10 → 150), a feat (survive, Heralds, kills, Torment clears) and Starshards / Eclipse Shards. Every rank: +3% Might, +4% Health, +1 Starweb point; ranks I and III open new talent tiers; X is Transcendence.                                        | 12 × 10 ranks              |
+| **Talent tiers V–VI**  | Every branch gains a **Mastery** node (5 ranks, built from the branch's own first two nodes; Ascension I) and an **Apex** (Ascension III) that makes every rank in the branch count 50% more. Trees go from 57 to 75 points.                                                                              | ~level 75 per champion     |
+| **Weapon Mastery**     | 25 levels per weapon from its damage (`√dmg × 2.5` XP). +2% damage per level; perks at 5 / 10 / 15 / 20 / 25 — 10 unlocks **Apotheosis**, 20 raises the Overdrive cap.                                                                                                                                    | 40 weapons × 25            |
+| **Soul Arts**          | A second active skill any champion carries (R / gamepad Y). Eight arts unlocked by Soul Rank + Embers, each upgradable to level 5. Long cooldowns, big moments — the champion's own ability stays the fast button.                                                                                        | Ember sink                 |
+| **Torment I–XX**       | Per-stage difficulty tiers: T1 after 20:00 on a stage, each next tier after 15:00 at the last. Health ×(1 + 0.5t + 0.06t²), damage ×(1 + 0.15t), rewards ×(1 + 0.4t); elites gain an affix from IV, legendary boons from III. Drops **Eclipse Shards**, the endgame currency.                             | Endless                    |
+| **Night Contracts**    | Three daily bounties + a weekly Grand Contract, rolled from the UTC calendar with their own RNG (never the run's). Targets scale with Soul Rank; one free reroll a day; all three dailies earn the Keeper's Cache.                                                                                        | Daily / weekly             |
+| **Forge**              | **Celestial** anvil tier (180 ranks; 10 nodes) and six more infinite Mastery lines; six **gear sets** (2/4/6-piece bonuses, from Forge 7; the Eclipse Catalyst guarantees one); eight new uniques; Starshard ⇄ Eclipse transmutes.                                                                        | Gold & shard sink          |
+| **Milestones / story** | 27 new milestones for the new tracks; three Chronicle chapters (_The Second Forging_, _Constellations_, _The Dread Tiers_).                                                                                                                                                                               | —                          |
+
+Save v4 migrates veterans fairly: Soul XP starts at everything their champions ever earned, and each weapon's
+Mastery at twice the XP of its best recorded run.
+
+### In the run
+
+- **Overdrive.** An evolved weapon keeps appearing on level-up cards past its max: Overdrive I–V (more with
+  Mastery 20, the Sunshard Diadem, Crown of the Dawn). +15% damage each; II/IV faster, III wider, V +1 Amount.
+  This is what late-game level-ups were missing — they used to fall back to gold.
+- **Apotheosis** (second evolution). An evolved weapon at Overdrive III whose Weapon Mastery is 10 transcends
+  at the next chest: +35% damage, every cast echoes at half strength, and its hits carry its element (fire
+  ignites, lightning arcs, shadow drains…). Ascension VIII waives the mastery for the signature weapon.
+- **Ability Ranks.** The champion's ability is now on the level-up cards (I–V: +20% power, −8% cooldown each).
+- **Overflow.** With the Starweb's _Overflowing Satchel_, passives climb three levels past their max at 60% value.
+- **New content.** Four weapons (Ember Chakram, Glacial Spire, Wraith Banner, Judgment Hammer), each evolving
+  with one of six new passives (Ember Sigil, Frostbite Charm, Necromancer's Tome, Warlord's Seal, Thorned
+  Mail, Reaper's Brand). The **Cull** stat kills struck non-bosses below a health share.
+- **Boons, in three kinds.** Four more ordinary boons; four **Cursed** bargains (Hungering Blade, Blood Price,
+  Doomsayer, Oath of Silence — at most one per offer); four **Legendary** boons (Crown of the Dawn, Infinite
+  Recursion, Starborn, Herald's Mantle) that only tiered Heralds, the Eclipse or Torment III+ can offer.
+- **Keystones** change a rule at a price: _Avatar of Ruin_ (overkill carries on, −10% health), _Unbreakable
+  Will_ (armour as % reduction, slower), _Phantom Step_ (two dash charges and an exploding afterimage, slower
+  ability), _Gambler's Oath_ (generous chests and empowered cards, no rerolls/skips/banishes), _Primordial
+  Conduit_ (random elements, stronger reactions, weaker crits), _Lord of the Hollow_ (a shade army, less health).
+
+### Tuning notes (fourth round)
+
+- Curves are deliberately sub-linear at the start and long at the end: the first Soul Ranks, Mastery levels
+  and Ascension come within a few runs; Ascension X needs character level 150 and Torment X.
+- Every new multiplier is per-weapon or conditional; the global stat sticks (Starweb minors, Ascension) are
+  small and numerous, so no single purchase dominates.
+- Torment scales enemy health quadratically in the tier but rewards linearly — it is a skill/power dial, not a
+  farm that outruns itself. Eclipse Shards also drop from every Herald after the Eclipse, so the currency is
+  reachable before Torment.
+- All new randomness in a run uses `simRng` (tests replay a Torment run with keystones and a Soul Art from its
+  seed); contracts and crafting keep their own generators.
+
 ## Feel and presentation
 
 - **Time warp.** The simulation requests slow motion through `fx.timeWarp(scale, seconds)` (boss intro

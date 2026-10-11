@@ -56,6 +56,8 @@ export interface PlayerStats {
   sigDmg: number;
   /** Elemental reaction damage bonus (see data/synergy.ts). */
   reactDmg: number;
+  /** Cull threshold: non-boss enemies struck below this share of their health die outright. */
+  cull: number;
 }
 export type StatKey = keyof PlayerStats;
 /** Additive stat deltas, e.g. `{ might: 0.08 }`. May include derived keys like `maxHpPct`. */
@@ -134,8 +136,11 @@ export type WeaponDefInput = Omit<WeaponDef, 'max'> & { max?: number };
 export interface Weapon {
   id: string;
   def: WeaponDef;
+  /** 1..def.max, then Overdrive levels past the max once evolved (see `Game.weaponCap`). */
   level: number;
   evolved: boolean;
+  /** Apotheosis: the second evolution (echo casts, elemental imbue). */
+  apex?: boolean;
   timer: number;
   s: WeaponStats | null;
   dmgDealt: number;
@@ -199,6 +204,12 @@ export interface TalentNode {
   keystone?: boolean;
   tier: number;
   branch: string;
+  /** Points needed in the branch (defaults to `tier * 4`). */
+  req?: number;
+  /** Champion Ascension rank needed (data/progression.ts). */
+  asc?: number;
+  /** Apex node: every rank in its branch counts 50% more (see Save.computeMeta). */
+  apex?: boolean;
 }
 export interface TalentBranch {
   id: string;
@@ -292,9 +303,20 @@ export interface Player {
   dashOnStep: ((x: number, y: number) => void) | null;
   dashStepDist: number;
   dashAcc: number;
-  /** Seconds until the universal evasive dash is ready again (0 = ready). */
+  /** Seconds until the next dash charge is back (0 = all charges ready). */
   dashCdT: number;
+  /** Dash charges (Phantom Step grants a second). */
+  dashCharges: number;
+  dashMax: number;
   auraColor: string | null;
+  /** Weapon Mastery levels from the meta layer (perks in weaponStats). */
+  weaponLevels: Record<string, number>;
+  /** Ability Rank 0–5 (level-up cards): ability power and cooldown. */
+  abilityRank: number;
+  /** Sim times until which Battle Trance, the Echoing Band and the Ember Covenant are active. */
+  tranceUntil: number;
+  echoUntil: number;
+  covenantUntil: number;
   /** Character-specific runtime state (resources, cooldowns, toggles). */
   [state: string]: any;
 }
@@ -660,7 +682,7 @@ export interface Ally {
 
 export type PickupKind = 'gem' | 'gold' | 'food' | 'magnet' | 'bomb' | 'clock' | 'chest' | 'bosschest' | 'mat' | 'ember' | 'brazier';
 export type GemTier = 'blue' | 'green' | 'red' | 'purple';
-export type MaterialId = 'iron' | 'dust' | 'crystal' | 'star';
+export type MaterialId = 'iron' | 'dust' | 'crystal' | 'star' | 'eclipse';
 
 export interface Pickup {
   kind: PickupKind;
@@ -786,7 +808,12 @@ export type ScriptedEvent =
 export interface MetaBonuses {
   stats: StatBag;
   flags: Flags;
+  /** Weapon id → permanent damage bonus (armory stages + mastery levels). */
   weaponMastery: Record<string, number>;
+  /** Weapon id → Weapon Mastery level (perks: data/progression.ts). Optional for older callers. */
+  weaponLevels?: Record<string, number>;
+  /** Champion Ascension rank (0–10). */
+  ascension?: number;
 }
 
 export interface Materials {
@@ -794,6 +821,8 @@ export interface Materials {
   dust: number;
   crystal: number;
   star: number;
+  /** Eclipse Shards: Torment and post-Eclipse drops (endgame currency). */
+  eclipse: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -803,14 +832,17 @@ export interface Materials {
 export type LevelOption =
   | { type: 'weapon'; id: string; def: WeaponDef; level: number; weight: number; isNew?: boolean; empowered?: boolean }
   | { type: 'passive'; id: string; def: PassiveDef; level: number; weight: number; isNew?: boolean; empowered?: boolean }
+  /** Ability Rank: the champion's active grows stronger and recharges faster. */
+  | { type: 'ability'; id: 'ability'; level: number; weight: number; isNew?: undefined; empowered?: undefined }
   | { type: 'gold'; value: number; id?: undefined }
   | { type: 'heal'; value: number; id?: undefined };
 
-/** A weapon/passive card (the options that come from the upgrade pool). */
-export type UpgradeOption = Extract<LevelOption, { type: 'weapon' | 'passive' }>;
+/** A card that comes from the upgrade pool (weapons, passives, ability ranks). */
+export type UpgradeOption = Extract<LevelOption, { type: 'weapon' | 'passive' | 'ability' }>;
 
 export type ChestReward =
   | { type: 'evolve'; def: WeaponDef; name: string; icon: IconSpec; desc: string }
+  | { type: 'apotheosis'; def: WeaponDef; name: string; icon: IconSpec; desc: string }
   | { type: 'weapon'; def: WeaponDef; level: number }
   | { type: 'passive'; def: PassiveDef; level: number }
   | { type: 'gold'; value: number }
@@ -836,7 +868,7 @@ export interface RunSummary {
   dmgByWeapon: Record<string, number>;
   /** Kills per damage source, keyed like `dmgByWeapon`. */
   killsBySource: Record<string, number>;
-  weapons: { id: string; level: number; evolved: boolean; dmg: number }[];
+  weapons: { id: string; level: number; evolved: boolean; apex?: boolean; dmg: number }[];
   passives: { id: string; level: number }[];
   eclipse: boolean;
   /** What landed the killing blow (enemy name, 'projectile', …). */
@@ -845,6 +877,15 @@ export interface RunSummary {
   reactions: number;
   boons: string[];
   shrines: number;
+  /** Torment tier the run was played at (0 = none). */
+  torment: number;
+  /** Weapons that reached Apotheosis this run. */
+  apotheoses: number;
+  /** Highest Ability Rank reached. */
+  abilityRank: number;
+  /** Equipped Soul Art (null = none) and how often it was cast. */
+  art: string | null;
+  artUses: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -894,6 +935,8 @@ export interface BoonDef {
   name: string;
   icon: IconSpec;
   desc: string;
+  /** Cursed boons trade a heavy cost for power; legendary ones only come from tiered Heralds or Torment. */
+  rarity?: 'cursed' | 'legendary';
   /** Permanent stat deltas while owned. */
   stats?: StatBag;
   /** Mechanic switch read by the simulation (`player.f[flag]`). */
@@ -910,4 +953,6 @@ export interface InputSource {
   consumeActive(): boolean;
   /** True once per press of the dash button. */
   consumeDash(): boolean;
+  /** True once per press of the Soul Art button (optional: scripted inputs may omit it). */
+  consumeArt?(): boolean;
 }

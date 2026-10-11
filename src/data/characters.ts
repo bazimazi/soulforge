@@ -4,13 +4,15 @@ import { rand } from '../core/rng';
 import type { Game } from '../game/game';
 import type { Chapter, CharacterDef, Enemy, PlayerStats, Projectile, StatBag, TalentBranch, TalentNode, Vec2 } from '../game/types';
 import { WEAPONS, WH, registerWeapon, weaponStats } from './weapons';
+import { statFmt, statName } from './passives';
+import { APEX_TIER_ASC, MASTERY_TIER_ASC } from './progression';
 
 const H = WH, W = registerWeapon;
 
 export const CHAR_BASE: PlayerStats = {
   maxHp: 100, regen: 0, armor: 0, speed: 165, might: 1, area: 1, projSpeed: 1, duration: 1, amount: 0, cooldown: 1, luck: 1, growth: 1, greed: 1, magnet: 80,
   revival: 0, crit: 0.05, critDmg: 1.5, dodge: 0, lifesteal: 0, curse: 1, rerolls: 0, skips: 0, banishes: 0, activeCd: 1, thorns: 0, healing: 1, eliteDmg: 0, burnDmg: 0,
-  shieldPower: 1, minionDmg: 0, xpBonus: 0, matFind: 0, startLevel: 0, pierce: 0, knockback: 0, chestLuck: 0, slowPower: 0, execute: 0, sigDmg: 0, reactDmg: 0,
+  shieldPower: 1, minionDmg: 0, xpBonus: 0, matFind: 0, startLevel: 0, pierce: 0, knockback: 0, chestLuck: 0, slowPower: 0, execute: 0, sigDmg: 0, reactDmg: 0, cull: 0,
 };
 
 /* talent tree builders */
@@ -1088,6 +1090,26 @@ CHARS.push({
     CH('Wind Incarnate', 'You cannot catch the wind. You cannot fight it either.', { type: 'time', v: 1500 }, { flag: 'wind_incarnate', stats: { might: 0.1, speed: 0.08, dodge: 0.05 }, desc: 'Ascension: +10% Might, +8% speed, +5% dodge and a howling aura.' }),
   ],
 });
+
+/* =====================================================================
+   Fourth round: every branch grows two more tiers, opened by Champion Ascension.
+   - Mastery (tier V, Ascension I): five ranks built from the branch's first two stat nodes, so it
+     deepens what the branch already is.
+   - Apex (tier VI, Ascension III): every rank spent in the branch counts 50% more (computeMeta).
+   ===================================================================== */
+/** Points that must be spent in a branch before its Mastery and Apex open. */
+export const MASTERY_REQ = 16;
+for (const ch of CHARS) {
+  for (const b of ch.talents) {
+    const per: StatBag = {};
+    for (const s of b.nodes.filter((nd) => nd.per && !nd.keystone).slice(0, 2)) for (const k in s.per) per[k] = (per[k] || 0) + s.per[k]! * 0.6;
+    const desc = Object.keys(per).map((k) => statName(k) + ' ' + statFmt(k, per[k]!)).join(', ') + ' per rank.';
+    b.nodes.push({ id: ch.id + '_' + b.id + '_mastery', name: b.name + ' Mastery', max: 5, per, desc, tier: 5, branch: b.id, req: MASTERY_REQ, asc: MASTERY_TIER_ASC });
+    // the Apex asks for all but two of the ranks before it
+    const before = b.nodes.reduce((a, nd) => a + nd.max, 0);
+    b.nodes.push({ id: ch.id + '_' + b.id + '_apex', name: 'Apex of ' + b.name, max: 1, desc: 'Every rank in ' + b.name + ' counts 50% more.', tier: 6, branch: b.id, req: before - 2, asc: APEX_TIER_ASC, apex: true });
+  }
+}
 
 export { CHARS as CHARACTERS };
 export const CHAR_BY_ID: Record<string, CharacterDef> = {}; CHARS.forEach((c) => (CHAR_BY_ID[c.id] = c));

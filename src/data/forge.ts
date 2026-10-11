@@ -61,6 +61,22 @@ export interface UniqueDef {
   flag?: string;
   stats?: StatBag;
 }
+export interface SetBonus {
+  n: number;
+  desc: string;
+  stats?: StatBag;
+  flag?: string;
+}
+/** Gear set: equipping several pieces awakens its bonuses (2 / 4 / 6 pieces). */
+export interface SetDef {
+  id: string;
+  name: string;
+  /** Prefix for forged piece names ("Emberwrought Helm"). */
+  short: string;
+  color: string;
+  icon: IconSpec;
+  bonuses: SetBonus[];
+}
 export interface ForgePerks {
   valueMult: number;
   transmute: boolean;
@@ -70,6 +86,8 @@ export interface ForgePerks {
   mythic: boolean;
   catalyst2: boolean;
   catalyst3: boolean;
+  /** Set pieces can be forged (Forge level 7). */
+  sets: boolean;
 }
 export interface CatalystDef {
   id: string;
@@ -78,6 +96,8 @@ export interface CatalystDef {
   minRarity: number;
   req?: keyof ForgePerks;
   desc?: string;
+  /** Guarantees a set piece. */
+  set?: boolean;
 }
 export interface Affix {
   stat: string;
@@ -93,11 +113,15 @@ export interface Item {
   name: string;
   spent: number;
   unique?: string;
+  /** Gear set id (SETS); set pieces never carry a unique power. */
+  set?: string;
 }
 export interface CraftOpts {
   rarity?: RarityDef;
   minRarity?: number;
   luck?: number;
+  /** Always forge a set piece (Eclipse Catalyst). */
+  set?: boolean;
 }
 export interface UpgradeCost {
   gold: number;
@@ -156,9 +180,26 @@ export const ANVIL: AnvilDef[] = [
   A('a_m_growth', 'Mastery: Growth', { g: 'crown', c: '#facc15' }, 'growth', 0.01, 999, 2500, 4, 1.12),
   A('a_m_greed', 'Mastery: Greed', { g: 'coin', c: '#f5c542' }, 'greed', 0.01, 999, 2500, 4, 1.12),
   A('a_m_cd', 'Mastery: Haste', { g: 'clock', c: '#f472b6' }, 'cooldown', 0.005, 999, 4000, 4, 1.12),
+  A('a_m_crit', 'Mastery: Brutality', { g: 'sword', c: '#fca5a5' }, 'critDmg', 0.01, 999, 3000, 4, 1.12),
+  A('a_m_area', 'Mastery: Reach', { g: 'hex', c: '#7dd3fc' }, 'area', 0.004, 999, 3500, 4, 1.12),
+  A('a_m_luck', 'Mastery: Luck', { g: 'clover', c: '#4ade80' }, 'luck', 0.005, 999, 3000, 4, 1.12),
+  A('a_m_xp', 'Mastery: Wisdom', { g: 'book', c: '#c4b5fd' }, 'xpBonus', 0.01, 999, 2500, 4, 1.12),
+  A('a_m_mat', 'Mastery: Prospecting', { g: 'shard', c: '#fde68a' }, 'matFind', 0.01, 999, 3000, 4, 1.12),
+  A('a_m_elite', 'Mastery: Slayer', { g: 'crown', c: '#f87171' }, 'eliteDmg', 0.01, 999, 3000, 4, 1.12),
+  // Celestial: the late-game gold sink (unlocks at 180 total ranks)
+  A('a_c_might', 'Celestial Might', { g: 'sun', c: '#ff7043' }, 'might', 0.03, 10, 40000, 5, 1.3),
+  A('a_c_hp', 'Celestial Vitality', { g: 'sun', c: '#ff5c7a' }, 'maxHpPct', 0.04, 10, 40000, 5, 1.3),
+  A('a_c_cd', 'Celestial Haste', { g: 'sun', c: '#f472b6' }, 'cooldown', 0.015, 10, 60000, 5, 1.3),
+  A('a_c_area', 'Celestial Reach', { g: 'sun', c: '#7dd3fc' }, 'area', 0.03, 10, 50000, 5, 1.3),
+  A('a_c_crit', 'Celestial Ruin', { g: 'sun', c: '#fca5a5' }, 'critDmg', 0.06, 10, 45000, 5, 1.3),
+  A('a_c_luck', 'Celestial Fortune', { g: 'sun', c: '#4ade80' }, 'luck', 0.03, 10, 45000, 5, 1.3),
+  A('a_c_react', 'Celestial Storm', { g: 'sun', c: '#fde047' }, 'reactDmg', 0.1, 10, 40000, 5, 1.3),
+  A('a_c_minion', 'Celestial Legion', { g: 'sun', c: '#86efac' }, 'minionDmg', 0.06, 10, 40000, 5, 1.3),
+  A('a_c_cull', 'Celestial Culling', { g: 'sun', c: '#a78bfa' }, 'cull', 0.01, 5, 70000, 5, 1.4),
+  A('a_c_amount', 'Celestial Multiplicity', { g: 'sun', c: '#f0abfc' }, 'amount', 1, 1, 500000, 5),
 ];
 export const ANVIL_BY_ID: Record<string, AnvilDef> = {}; ANVIL.forEach((a) => (ANVIL_BY_ID[a.id] = a));
-export const ANVIL_TIER_REQ: Record<number, number> = { 1: 0, 2: 15, 3: 40, 4: 80 };
+export const ANVIL_TIER_REQ: Record<number, number> = { 1: 0, 2: 15, 3: 40, 4: 80, 5: 180 };
 export const anvilCost = (a: AnvilDef, rank: number): number => Math.round(a.cost * Math.pow(a.growth, rank));
 
 /* ---------- SIGILS: bought with Soul Embers ---------- */
@@ -233,17 +274,70 @@ export const UNIQUES: UniqueDef[] = [
   { id: 'sages_eye', name: "Sage's Eye", desc: 'Level-ups offer an extra choice. +10% Growth.', flag: 'extraChoice', stats: { growth: 0.1 } },
   { id: 'heart_of_horde', name: 'Heart of the Horde', desc: '+25% Curse and +15% Might.', stats: { curse: 0.25, might: 0.15 } },
   { id: 'mirror_shard', name: 'Mirror Shard', desc: '+1 Amount.', stats: { amount: 1 } },
+  // fourth round
+  { id: 'hourglass_ages', name: 'Hourglass of Ages', desc: 'Every 30 seconds time stops: every enemy around you freezes for 1.5 seconds.', flag: 'u_hourglass' },
+  { id: 'crown_thorns', name: 'Crown of Thorns', desc: 'Thorns +100%. Being struck looses a ring of eight thorns.', flag: 'u_thorncrown', stats: { thorns: 1 } },
+  { id: 'storm_eye', name: 'Eye of the Storm', desc: 'Dashing releases a nova of lightning that shocks everything it touches.', flag: 'u_stormeye' },
+  { id: 'abyssal_heart', name: 'Abyssal Heart', desc: '+1 Amount. Max Health -20%.', stats: { amount: 1, maxHpPct: -0.2 } },
+  { id: 'reapers_due', name: "Reaper's Due", desc: 'Elites and Heralds below 15% health take double damage.', flag: 'u_reaper' },
+  { id: 'lantern_lost', name: "Wayfarer's Lantern", desc: 'Pickup radius +50%. Every 150 gems you collect heal 5% of your max health.', flag: 'u_lantern', stats: { magnet: 0.5 } },
+  { id: 'sunshard', name: 'Sunshard Diadem', desc: 'Overdrive cap +1. Evolved weapons deal +10% damage.', flag: 'u_sunshard' },
+  { id: 'echo_band', name: 'Echoing Band', desc: 'Ability cooldown -15%. Using your ability grants +25% Might for 4 seconds.', flag: 'u_echo', stats: { activeCd: 0.15 } },
 ];
 export const UNIQUE_BY_ID: Record<string, UniqueDef> = {}; UNIQUES.forEach((u) => (UNIQUE_BY_ID[u.id] = u));
 
+/* ---------- GEAR SETS: forged from Forge level 7; bonuses at 2 / 4 / 6 equipped pieces ---------- */
+export const SETS: SetDef[] = [
+  { id: 'emberwrought', name: 'Emberwrought', short: 'Emberwrought', color: '#ff7a3c', icon: { g: 'flame', c: '#ff7a3c' }, bonuses: [
+    { n: 2, stats: { burnDmg: 0.25 }, desc: 'Burn damage +25%.' },
+    { n: 4, stats: { might: 0.1 }, flag: 'res_fire', desc: 'Might +10%. Burning enemies explode when they die.' },
+    { n: 6, flag: 'set_ember', desc: 'Hits ignite 15% of the time, and burning enemies take +15% damage.' },
+  ] },
+  { id: 'frostbound', name: 'Frostbound Regalia', short: 'Frostbound', color: '#bae6fd', icon: { g: 'snowflake', c: '#bae6fd' }, bonuses: [
+    { n: 2, stats: { slowPower: 0.2, duration: 0.1 }, desc: 'Slow +20%, Duration +10%.' },
+    { n: 4, flag: 'res_ice', desc: 'Chilled and frozen enemies take +20% damage.' },
+    { n: 6, flag: 'set_frost', desc: 'Hits freeze 8% of the time, and chilled or frozen enemies deal 15% less damage to you.' },
+  ] },
+  { id: 'stormcaller', name: "Stormcaller's Vestments", short: 'Stormcaller', color: '#fde047', icon: { g: 'bolt', c: '#fde047' }, bonuses: [
+    { n: 2, stats: { cooldown: 0.06 }, desc: 'Cooldown -6%.' },
+    { n: 4, flag: 'res_storm', desc: 'Hitting a shocked enemy arcs lightning to a neighbour.' },
+    { n: 6, flag: 'b_storm', desc: 'Every 3 seconds lightning strikes three nearby enemies.' },
+  ] },
+  { id: 'gravewarden', name: "Gravewarden's Shroud", short: 'Gravewarden', color: '#86efac', icon: { g: 'minion', c: '#86efac' }, bonuses: [
+    { n: 2, stats: { minionDmg: 0.25 }, desc: 'Minion damage +25%.' },
+    { n: 4, flag: 'res_umbra', desc: 'Kills have a 4% chance to raise a hunting shade.' },
+    { n: 6, stats: { revival: 1, minionDmg: 0.4 }, desc: '+1 Revival. Minion damage +40%.' },
+  ] },
+  { id: 'dawnguard', name: 'Bastion of the Dawn', short: 'Dawnguard', color: '#fde68a', icon: { g: 'shield', c: '#fde68a' }, bonuses: [
+    { n: 2, stats: { armor: 2, maxHpPct: 0.1 }, desc: 'Armor +2, Max Health +10%.' },
+    { n: 4, flag: 'u_aegis', desc: 'Every 20 seconds, gain a shield worth 12% of max health.' },
+    { n: 6, flag: 'b_second', desc: 'Falling below 30% health grants a large shield and 2s of invulnerability (every 60s).' },
+  ] },
+  { id: 'gilded', name: 'Gilded Fortune', short: 'Gilded', color: '#f5c542', icon: { g: 'coin', c: '#f5c542' }, bonuses: [
+    { n: 2, stats: { greed: 0.2, luck: 0.1 }, desc: 'Gold +20%, Luck +10%.' },
+    { n: 4, stats: { matFind: 0.3, chestLuck: 0.2 }, desc: 'Material find +30%, Chest bounty +20%.' },
+    { n: 6, flag: 'set_midas', desc: 'Every 200 gold you pick up grants +1% Might for the rest of the run (up to +30%).' },
+  ] },
+];
+export const SET_BY_ID: Record<string, SetDef> = {}; SETS.forEach((s) => (SET_BY_ID[s.id] = s));
+/** Chance that a Rare-or-better item forged at Forge level 7+ is a set piece. */
+export const SET_CHANCE = 0.2;
+/** Equipped pieces per set id. */
+export const setCounts = (items: Item[]): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const it of items) if (it.set && SET_BY_ID[it.set]) out[it.set] = (out[it.set] || 0) + 1;
+  return out;
+};
+
 export const forgeXpFor = (L: number): number => Math.round(400 * Math.pow(L, 1.7));
-export const forgeLevelPerks = (L: number): ForgePerks => ({ valueMult: 1 + 0.04 * (L - 1), transmute: L >= 2, reforge: L >= 3, epic: L >= 4, legendary: L >= 6, mythic: L >= 10, catalyst2: L >= 5, catalyst3: L >= 8 });
+export const forgeLevelPerks = (L: number): ForgePerks => ({ valueMult: 1 + 0.04 * (L - 1), transmute: L >= 2, reforge: L >= 3, epic: L >= 4, legendary: L >= 6, mythic: L >= 10, catalyst2: L >= 5, catalyst3: L >= 8, sets: L >= 7 });
 export const craftCost = (L: number): { gold: number; iron: number } => ({ gold: Math.round(150 + 70 * L * Math.pow(1.08, L)), iron: 3 + L });
 export const CATALYSTS: CatalystDef[] = [
   { id: 'none', name: 'No catalyst', cost: {}, minRarity: 0 },
   { id: 'arcane', name: 'Arcane Catalyst', cost: { dust: 6 }, minRarity: 2, req: 'transmute', desc: 'Guarantees at least Rare.' },
   { id: 'void', name: 'Void Catalyst', cost: { crystal: 4 }, minRarity: 3, req: 'catalyst2', desc: 'Guarantees at least Epic.' },
   { id: 'star', name: 'Star Catalyst', cost: { star: 3 }, minRarity: 4, req: 'catalyst3', desc: 'Guarantees at least Legendary.' },
+  { id: 'eclipse', name: 'Eclipse Catalyst', cost: { eclipse: 2, crystal: 4 }, minRarity: 3, req: 'sets', set: true, desc: 'Guarantees an Epic-or-better set piece.' },
 ];
 export const rollRarity = function (forgeLevel: number, minRarity: number, luck?: number): RarityDef {
   const perks = forgeLevelPerks(forgeLevel);
@@ -278,7 +372,11 @@ export const craftItem = function (slotId: string, forgeLevel: number, opts: Cra
     affixes.push({ stat, base: metaRng.range(rng[0], rng[1]) * perks.valueMult * rarity.mult });
   }
   const item: Item = { uid: Date.now().toString(36) + metaRng.next().toString(36).slice(2, 7), slot: slotId, rarity: rarity.id, level: 0, affixes, ilvl: forgeLevel, name: '', spent: 0 };
-  if (rarity.unique) {
+  if (opts.set || (perks.sets && rarity.index >= 2 && metaRng.next() < SET_CHANCE)) {
+    const set = metaRng.pick(SETS);
+    item.set = set.id;
+    item.name = set.short + ' ' + metaRng.pick(NAMES[slotId]!);
+  } else if (rarity.unique) {
     const u = metaRng.pick(UNIQUES);
     item.unique = u.id;
     item.name = u.name;
@@ -308,6 +406,7 @@ export const salvageValue = function (item: Item): Reward & { gold: number } {
   const r = RARITY_BY_ID[item.rarity]!;
   const table: Reward[] = [{ iron: 3 }, { iron: 6, dust: 1 }, { iron: 10, dust: 3 }, { dust: 6, crystal: 2 }, { crystal: 5, star: 1 }, { crystal: 8, star: 3 }];
   const out = Object.assign({}, table[r.index]) as Reward & { gold: number };
+  if (item.set) out.eclipse = (out.eclipse || 0) + 1;
   out.gold = Math.round(item.spent * 0.5);
   return out;
 };
@@ -320,4 +419,6 @@ export const TRANSMUTE: TransmuteRecipe[] = [
   { id: 't5', from: { crystal: 1 }, to: { dust: 4 }, name: 'Dissolve Crystal → Dust' },
   { id: 't6', from: { dust: 1 }, to: { iron: 6 }, name: 'Dissolve Dust → Iron' },
   { id: 't7', from: { gold: 120 }, to: { iron: 5 }, name: 'Buy Iron with Gold' },
+  { id: 't8', from: { star: 8 }, to: { eclipse: 1 }, name: 'Darken Starshards → Eclipse Shard' },
+  { id: 't9', from: { eclipse: 1 }, to: { star: 4 }, name: 'Kindle Eclipse Shard → Starshards' },
 ];

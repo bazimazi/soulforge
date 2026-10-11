@@ -11,12 +11,14 @@ import { rand, simRng } from '../core/rng';
 import { SpatialHash } from '../core/spatial-hash';
 import { U } from '../core/util';
 import { CHAR_BASE, CHAR_BY_ID } from '../data/characters';
-import { BOONS, BOON_BY_ID } from '../data/boons';
+import { BOONS, BOON_BY_ID, LEGENDARY_BOON_CHANCE } from '../data/boons';
 import { AFFIX_BY_ID, BLOOD_MOON, BOSSES, BOSS_ORDER, CASK, ELITE_AFFIXES, ENEMIES, EVENTS, HOARDER, LATE_SPECIALS, METEOR_SHOWER, SPAWN_TABLE, TOTEM, difficulty, xpForLevel } from '../data/enemies';
 import { MAT_BY_ID, OMEN_BY_ID, PASSIVES, PASSIVE_BY_ID, STAGE_BY_ID, heatBonus } from '../data/passives';
 import { SHRINE_CHANNEL, SHRINE_DEFS, SHRINE_KINDS, SHRINE_RADIUS, TRIAL_TIME } from '../data/shrines';
 import { BRITTLE_MUL, COMBO_GROWTH, COMBO_MIGHT, COMBO_TIERS, COMBO_WINDOW, REACTION_CD, REACTION_DEFS, RESONANCES, comboTier, resonanceTier, type ReactionId, type ResonanceState } from '../data/synergy';
 import { WEAPONS, WH, weaponStats } from '../data/weapons';
+import { ABILITY_RANK_CD, ABILITY_RANK_MAX, ABILITY_RANK_POWER, APOTHEOSIS, APOTHEOSIS_IMBUE, APOTHEOSIS_MASTERY, APOTHEOSIS_OVERDRIVE, ASCENDED_ABILITY_RANK, OVERDRIVE_BASE, OVERFLOW_LEVELS, OVERFLOW_VALUE, TORMENT_EXTRA_AFFIX, applyTorment, eclipseBossShards, eclipseEliteChance, tormentReward } from '../data/progression';
+import { ART_BY_ID, artCooldown, artPower, type SoulArtDef } from '../data/soularts';
 import type { FX } from '../render/fx';
 import type {
   StatusSpec, Ally, BoonDef, BossAttack, Hazard, MaterialId, Shrine, StoryBeatId, PassiveDef, UpgradeOption, WeaponDef, CharacterDef, ChestReward, DamageInfo, DamageSource, Difficulty, DifficultyMods, Enemy, GameEvents, GameState, InputSource,
@@ -36,6 +38,10 @@ export interface RunConfig {
   seed?: number;
   /** Show first-run hints. */
   tutorial?: boolean;
+  /** Torment tier (0 = Normal; data/progression.ts). */
+  torment?: number;
+  /** Equipped Soul Art and its level. */
+  art?: { id: string; level: number } | null;
 }
 
 interface Timer {
@@ -136,10 +142,19 @@ function angleDiff(a: number, b: number): number {
   return d;
 }
 
+/** What Apotheosis does to a weapon, for the chest card. */
+export function apotheosisDesc(def: WeaponDef): string {
+  const tag = (def.tags || []).find((t) => APOTHEOSIS_IMBUE[t]);
+  return (def.continuous ? 'Damage +45%' : 'Damage +35%, and every cast echoes at half strength') + (tag ? '; ' + APOTHEOSIS_IMBUE[tag] + ' (20% of the time).' : '.');
+}
+
 /** Universal evasive dash (every character): distance, duration, cooldown and invulnerability window, in px / s. */
 export const DASH = { dist: 150, time: 0.15, cd: 1.5, invuln: 0.3 };
 
-const NO_INPUT: InputSource = { moveX: () => 0, moveY: () => 0, consumeActive: () => false, consumeDash: () => false };
+const NO_INPUT: InputSource = { moveX: () => 0, moveY: () => 0, consumeActive: () => false, consumeDash: () => false, consumeArt: () => false };
+/** Damage sources for the fourth-round mechanics (the damage meter files them under these ids). */
+const SRC_KEYSTONE: DamageSource = { id: 'keystone' };
+const SRC_STAR: DamageSource = { id: 'starweb' };
 
 export class Game {
   readonly events = new Emitter<GameEvents>();
@@ -188,7 +203,7 @@ export class Game {
   evolves = 0;
   gold = 0;
   embers = 0;
-  mats: Materials = { iron: 0, dust: 0, crystal: 0, star: 0 };
+  mats: Materials = { iron: 0, dust: 0, crystal: 0, star: 0, eclipse: 0 };
   enemyKills: Record<string, number> = {};
   bossKillsBy: Record<string, number> = {};
   /** Damage dealt per source: weapon id, `skill` (the character's active, trait & talents) or a synthetic id (`burn`, `boon`…). */
@@ -254,6 +269,25 @@ export class Game {
   private holySaved = false;
   /** Phoenix Feather has been spent this run (the HUD greys its icon out). */
   phoenixUsed = false;
+  /** Fourth round: Torment tier, Apotheoses reached, the equipped Soul Art and its cooldown. */
+  torment = 0;
+  apotheoses = 0;
+  art: SoulArtDef | null = null;
+  artLevel = 0;
+  /** Seconds until the Soul Art is ready (0 = ready). */
+  artCdT = 0;
+  artUses = 0;
+  private lastBossTier = 0;
+  private lastKillAt = 0;
+  private lastHurtAt = 0;
+  private wardAt = 0;
+  private staticT = 5;
+  private hourglassT = 30;
+  private midasGold = 0;
+  private midasMight = 0;
+  private lanternGems = 0;
+  /** Herald's Mantle is raging (below half health). */
+  private mantleOn = false;
   /** Blood Moon: seconds remaining (0 = inactive). Enemies move faster and drop more XP. */
   bloodMoon = 0;
   /** Meteor shower: seconds remaining (0 = inactive). */
@@ -287,11 +321,13 @@ export class Game {
     let heat = 0;
     for (const id in this.omens) { const o = OMEN_BY_ID[id], r = this.omens[id]!; if (o && r > 0) { o.apply(mods, r); heat += r; } }
     if (this.meta.flags.moreElites) mods.elite *= 1.25;
+    this.torment = Math.max(0, Math.floor(cfg.torment || 0));
+    applyTorment(mods, this.torment);
     this.mods = mods; this.heat = heat;
     this.time = 0; this.frame = 0; this.dt = 1 / 60;
     this.enemies = []; this.projs = []; this.eprojs = []; this.zones = []; this.mines = []; this.allies = []; this.pickups = []; this.timers = [];
     this.grid.clear();
-    this.kills = 0; this.bossKills = 0; this.elites = 0; this.evolves = 0; this.gold = 0; this.embers = 0; this.mats = { iron: 0, dust: 0, crystal: 0, star: 0 };
+    this.kills = 0; this.bossKills = 0; this.elites = 0; this.evolves = 0; this.gold = 0; this.embers = 0; this.mats = { iron: 0, dust: 0, crystal: 0, star: 0, eclipse: 0 };
     this.enemyKills = {}; this.bossKillsBy = {}; this.dmgByWeapon = {}; this.killsBySource = {};
     this.spawnAcc = 0; this.eliteT = 75 / mods.elite; this.eventIdx = 0; this.lateEventT = 0; this.lateCycle = 0; this.brazierT = 30;
     this.gemCombo = 0; this.gemComboT = 0; this.uStormT = 4; this.uAegisT = 20; this.uStarT = 8; this.pulseT = 60; this.tlT = 300;
@@ -303,6 +339,10 @@ export class Game {
     this.reactions = 0; this.shrinesUsed = 0; this.resonance = []; this.trial = null; this.shrineT = 40; this.curseBonus = 0; this.harvestMight = 0; this.bannerMight = 0;
     this.lowHpAt = 0; this.secondAt = 0; this.eyeT = 6; this.stormT = 3; this.holySaved = false; this.phoenixUsed = false; this.reacted = new Set(); this.storyOnce = new Set();
     this.bloodMoon = 0; this.meteorShower = 0; this.meteorT = 0; this.totemAt = 0; this.hexers = [];
+    this.apotheoses = 0; this.artUses = 0; this.artCdT = 0; this.lastBossTier = 0; this.lastKillAt = 0; this.lastHurtAt = 0; this.wardAt = 0; this.staticT = 5; this.hourglassT = 30;
+    this.midasGold = 0; this.midasMight = 0; this.lanternGems = 0; this.mantleOn = false;
+    const art = cfg.art ? ART_BY_ID[cfg.art.id] : undefined;
+    this.art = art ?? null; this.artLevel = art ? Math.max(1, cfg.art!.level) : 0;
     this.caskAt = U.rand(CASK.every[0], CASK.every[1]); this.hoarderAt = U.rand(HOARDER.first[0], HOARDER.first[1]);
     this.createPlayer();
     this.state = 'play'; this.paused = false;
@@ -322,10 +362,13 @@ export class Game {
       face: { x: 1, y: 0 }, move: { x: 0, y: 0 }, movedDist: 0, invulnT: 0, hurtFlash: 0, activeCdT: 0, activeCharges: 1, activeMax: 1, critAllT: 0,
       rerolls: 0, skips: 0, banishes: 0, revivals: 0, kills: 0, boons: [] as string[], slowT: 0, slots: { w: 6 + (this.meta.flags.weaponSlot ? 1 : 0), p: 6 + (this.meta.flags.passiveSlot ? 1 : 0) },
       walkT: 0, dashT: 0, dashDx: 0, dashDy: 0, dashSpeed: 0, dashOnStep: null, dashStepDist: 30, dashAcc: 0, dashCdT: 0, auraColor: null,
+      weaponLevels: this.meta.weaponLevels || {}, abilityRank: this.meta.flags.asc_rank ? ASCENDED_ABILITY_RANK : 0,
+      dashMax: this.meta.flags.ks_phantom ? 2 : 1, dashCharges: this.meta.flags.ks_phantom ? 2 : 1, tranceUntil: 0, echoUntil: 0, covenantUntil: 0,
     };
     this.recalc();
     p.hp = p.stats.maxHp;
     p.rerolls = p.stats.rerolls; p.skips = p.stats.skips; p.banishes = p.stats.banishes; p.revivals = p.stats.revival;
+    if (p.f.ks_gamble) { p.rerolls = 0; p.skips = 0; p.banishes = 0; }
     p.activeMax = 1 + (p.f.dash_charges ? 1 : 0); p.activeCharges = p.activeMax;
     this.addWeapon(ch.signature);
     if (ch.hooks && ch.hooks.init) ch.hooks.init(this, p);
@@ -339,7 +382,8 @@ export class Game {
     const add: StatBag = {};
     const acc = (o: StatBag, m = 1) => { for (const k in o) add[k] = (add[k] || 0) + o[k]! * m; };
     acc(this.meta.stats);
-    p.passives.forEach((ps) => acc(ps.def.per, ps.level));
+    // Overflow levels (past the max) are worth OVERFLOW_VALUE of a normal level
+    p.passives.forEach((ps) => acc(ps.def.per, ps.level <= ps.def.max ? ps.level : ps.def.max + (ps.level - ps.def.max) * OVERFLOW_VALUE));
     acc(p.dyn);
     if (this.runMight) add.might = (add.might || 0) + this.runMight;
     this.accRunStats(acc);
@@ -351,8 +395,12 @@ export class Game {
     s.cooldown = base.cooldown * Math.max(0.25, 1 - g('cooldown'));
     s.activeCd = base.activeCd * Math.max(0.3, 1 - g('activeCd'));
     s.magnet = base.magnet * (1 + g('magnet'));
-    for (const k of ['armor', 'regen', 'amount', 'revival', 'rerolls', 'skips', 'banishes', 'pierce', 'startLevel', 'crit', 'critDmg', 'dodge', 'lifesteal', 'thorns', 'eliteDmg', 'burnDmg', 'minionDmg', 'xpBonus', 'matFind', 'knockback', 'chestLuck', 'slowPower', 'execute', 'sigDmg', 'reactDmg'] as const) s[k] = base[k] + g(k);
+    for (const k of ['armor', 'regen', 'amount', 'revival', 'rerolls', 'skips', 'banishes', 'pierce', 'startLevel', 'crit', 'critDmg', 'dodge', 'lifesteal', 'thorns', 'eliteDmg', 'burnDmg', 'minionDmg', 'xpBonus', 'matFind', 'knockback', 'chestLuck', 'slowPower', 'execute', 'sigDmg', 'reactDmg', 'cull'] as const) s[k] = base[k] + g(k);
     s.dodge = Math.min(0.75, s.dodge);
+    s.cull = Math.min(0.3, Math.max(0, s.cull));
+    s.critDmg = Math.max(1.1, s.critDmg);
+    // Juggernaut (Starweb): Armor feeds Might
+    if (p.f.sw_jugg) s.might += Math.min(0.2, Math.max(0, s.armor) * 0.01);
     // luck above the base sharpens crits as well as drops (+1% crit per +10% luck)
     s.crit += Math.max(0, s.luck - 1) * 0.1;
     // multiplicative per-run modifiers set by hooks (additive `dyn` can't express "double X" without feeding back into itself)
@@ -377,7 +425,8 @@ export class Game {
     for (const def of RESONANCES) {
       const n = counts[def.tag] || 0, tier = resonanceTier(def, n);
       if (n) this.resonance.push({ def, count: n, tier });
-      def.tiers.forEach((t, i) => { const on = i < tier; if (t.stats && on) acc(t.stats); if (t.flag) f[t.flag] = on; });
+      // a flag the meta layer grants outright (sets, the Starweb) stays on without the resonance
+      def.tiers.forEach((t, i) => { const on = i < tier; if (t.stats && on) acc(t.stats); if (t.flag) f[t.flag] = on || !!this.meta.flags[t.flag]; });
     }
     for (const id of p.boons) { const b = BOON_BY_ID[id]; if (b && b.stats) acc(b.stats); }
     for (const b of this.buffs) acc(b.stats);
@@ -386,6 +435,11 @@ export class Game {
     if (this.curseBonus) acc({ curse: this.curseBonus });
     if (this.harvestMight) acc({ might: this.harvestMight });
     if (this.bannerMight) acc({ might: this.bannerMight });
+    if (this.midasMight) acc({ might: this.midasMight });
+    if (f.sw_tide && (this.bloodMoon > 0 || this.eclipse)) acc({ might: 0.25 });
+    if (p.tranceUntil > this.time) acc({ might: 0.2 });
+    if (p.echoUntil > this.time) acc({ might: 0.25 });
+    if (this.mantleOn) acc({ might: 0.4, speed: 0.2 });
   }
 
   addWeapon(id: string): Weapon {
@@ -472,36 +526,70 @@ export class Game {
     for (const k of ['cdAshen', 'cdUnbroken', 'cdVeil']) if (p[k] > 0) p[k] -= dt;
     // regen
     if (st.regen > 0 && p.hp < st.maxHp) this.heal(st.regen * dt, true, true);
-    // active ability cooldown
-    if (p.activeCharges < p.activeMax) { p.activeCdT -= dt; if (p.activeCdT <= 0) { p.activeCharges++; p.activeCdT = p.activeCharges < p.activeMax ? p.char.active.cd * st.activeCd : 0; } }
-    if (inp.consumeActive() && p.activeCharges > 0) this.useActive();
-    // evasive dash
-    if (p.dashCdT > 0) p.dashCdT -= dt;
+    // active ability cooldown (Oath of Silence seals it)
+    if (p.activeCharges < p.activeMax) { p.activeCdT -= dt; if (p.activeCdT <= 0) { p.activeCharges++; p.activeCdT = p.activeCharges < p.activeMax ? this.activeCooldown() : 0; } }
+    if (inp.consumeActive() && p.activeCharges > 0 && !p.f.b_silence) this.useActive();
+    // evasive dash (Phantom Step: two charges)
+    if (p.dashCharges < p.dashMax) { p.dashCdT -= dt; if (p.dashCdT <= 0) { p.dashCharges++; p.dashCdT = p.dashCharges < p.dashMax ? this.dashCooldown() : 0; } }
+    else if (p.dashCdT > 0) p.dashCdT -= dt;
     if (inp.consumeDash()) this.evade();
+    // Soul Art
+    if (this.artCdT > 0) this.artCdT -= dt;
+    if (inp.consumeArt?.()) this.useArt();
     // character hooks
     const h = p.char.hooks;
     if (h && h.update) h.update(this, p, dt);
     // contact damage is handled in enemy update
   }
+  /** The ability's cooldown after Ability Cooldown and Ability Rank. */
+  activeCooldown(): number { const p = this.player; return p.char.active.cd * p.stats.activeCd * (1 - ABILITY_RANK_CD * (p.abilityRank || 0)); }
+  dashCooldown(): number { return DASH.cd * (this.player.f.sw_fleet ? 0.75 : 1); }
   useActive(): void {
     const p = this.player;
     p.activeCharges--;
-    if (p.activeCdT <= 0) p.activeCdT = p.char.active.cd * p.stats.activeCd;
-    p.char.active.use(this, p);
+    if (p.activeCdT <= 0) p.activeCdT = this.activeCooldown();
+    // Ability Rank: the ability is cast with extra Might (damage it computes as it is cast)
+    const might = p.stats.might;
+    p.stats.might = might * (1 + ABILITY_RANK_POWER * (p.abilityRank || 0));
+    try { p.char.active.use(this, p); } finally { p.stats.might = might; }
+    if (p.f.u_echo) { p.echoUntil = this.time + 4; this.recalc(); }
     this.fx.ring(p.x, p.y, 40, p.char.colors.accent, { thin: true });
+  }
+  /** The Soul Art's full cooldown. */
+  artCooldown(): number { return this.art ? artCooldown(this.art, this.artLevel) * this.player.stats.activeCd : 1; }
+  /** Cast the equipped Soul Art if it is ready. */
+  useArt(): boolean {
+    const p = this.player, a = this.art;
+    if (!a || this.artCdT > 0 || p.hp <= 0) return false;
+    this.artCdT = this.artCooldown();
+    this.artUses++;
+    a.use(this, p, artPower(this.artLevel));
+    this.fx.ring(p.x, p.y, 54, a.color);
+    return true;
   }
   /** The universal dash: a short invulnerable burst along the move direction (or facing when idle). */
   evade(): boolean {
     const p = this.player;
     // an ability dash (Inferno Dash, …) in flight keeps its own path
-    if (p.dashCdT > 0 || p.dashT > 0) return false;
+    if (p.dashCharges <= 0 || p.dashT > 0) return false;
     const l = Math.hypot(p.move.x, p.move.y);
     const dx = l > 0.01 ? p.move.x / l : p.face.x, dy = l > 0.01 ? p.move.y / l : p.face.y;
-    p.dashCdT = DASH.cd;
+    const ox = p.x, oy = p.y, f = p.f;
+    p.dashCharges--;
+    if (p.dashCdT <= 0) p.dashCdT = this.dashCooldown();
     this.dash(dx, dy, DASH.dist, DASH.time);
     this.setInvuln(DASH.invuln);
     this.fx.burst(p.x, p.y, p.char.colors.accent, 10, { speed: 140, life: 0.3 });
     this.sfx('dash');
+    // Starweb, uniques: what a dash sets off
+    if (f.sw_trance) { p.tranceUntil = this.time + 3; this.recalc(); }
+    if (f.sw_breath) this.heal(p.stats.maxHp * 0.02, true);
+    if (f.u_stormeye) this.nova(ox, oy, 150 * p.stats.area, (18 + p.level * 2.2) * p.stats.might, { id: 'unique' }, { color: '#fde047', status: { type: 'shock', dur: 3 }, knock: 0.6 });
+    if (f.ks_phantom) {
+      const dmg = (24 + p.level * 3) * p.stats.might;
+      this.fx.ring(ox, oy, 30, p.char.colors.accent, { thin: true });
+      this.after(0.4, () => this.explode(ox, oy, 90 * p.stats.area, dmg, SRC_KEYSTONE, { color: p.char.colors.accent, knock: 0.8 }));
+    }
     return true;
   }
   dash(dx: number, dy: number, dist: number, t: number, opts: { onStep?: (x: number, y: number) => void; stepDist?: number } = {}): void { const p = this.player; p.dashT = t; p.dashDx = dx; p.dashDy = dy; p.dashSpeed = dist / t; p.dashOnStep = opts.onStep || null; p.dashStepDist = opts.stepDist || 30; p.dashAcc = 0; }
@@ -533,12 +621,21 @@ export class Game {
   private applyPlayerHit(dmg: number, src?: { def?: { name: string }; color?: string } | null): void {
     const p = this.player;
     if (rand() < p.stats.dodge) { this.fx.text(p.x, p.y - 30, 'DODGE', '#94a3b8'); const h = p.char.hooks; if (h && h.onDodge) h.onDodge(this, p, src); return; }
+    const pf = p.f;
+    // Warding Sigils: a ward swallows the hit whole
+    if (pf.b_ward && this.wardAt <= this.time) { this.wardAt = this.time + 12; this.fx.ring(p.x, p.y, 34, '#c4b5fd'); this.fx.text(p.x, p.y - 30, 'WARDED', '#c4b5fd', true); this.setInvuln(0.2); return; }
     dmg = Math.max(1, dmg - p.stats.armor) * (p.dyn.dmgTaken || 1);
+    if (pf.ks_will) dmg *= 1 - Math.min(0.45, Math.max(0, p.stats.armor) * 0.015);
+    if (this.mantleOn) dmg *= 0.85;
+    const foe0 = src as Enemy | null | undefined;
+    if (pf.set_frost && foe0 && foe0.st && (foe0.st.chill || foe0.st.freeze)) dmg *= 0.85;
     const h = p.char.hooks;
     if (h && h.onHurt) dmg = h.onHurt(this, p, dmg, src);
     // thorns (Retaliation): whoever strikes you takes a share back; Grom adds a multiple of his Armor
     const foe = src as Enemy | null | undefined;
     if (foe && foe.hp != null && !foe.dead && (p.stats.thorns > 0 || p.thornsArmor)) this.damageEnemy(foe, dmg * p.stats.thorns + p.stats.armor * (p.thornsArmor || 0), { weapon: { id: 'thorns', thorns: true }, quiet: true, thorns: true });
+    if (pf.u_thorncrown) { const td = (10 + p.level * 1.5) * p.stats.might * (1 + p.stats.thorns); for (let i = 0; i < 8; i++) this.spawnProj({ x: p.x, y: p.y, angle: (i / 8) * TAU, speed: 380, r: 5, dmg: td, pierce: 1, life: 0.6, weapon: { id: 'unique' }, sprite: { kind: 'shard', color: '#f97316', len: 14, wid: 3 } }); }
+    this.lastHurtAt = this.time;
     if (p.shield > 0) { const a = Math.min(p.shield, dmg); p.shield -= a; dmg -= a; this.fx.burst(p.x, p.y, '#7dd3fc', 4, { speed: 60, life: 0.3 }); }
     if (dmg <= 0) return;
     if (p.blood > 0) { const a = Math.min(p.blood, dmg * 0.5); p.blood -= a; dmg -= a; }
@@ -607,9 +704,25 @@ export class Game {
         w.timer += Math.max(0.12, s.cd);
         if (w.timer < 0) w.timer = 0.05;
         const h = p.char.hooks; if (h && h.onCast) h.onCast(this, p, w);
+        // Apotheosis echoes every cast at half strength; Infinite Recursion sometimes casts again
+        if (w.apex) this.echoCast(w, APOTHEOSIS.echo, APOTHEOSIS.echoDelay);
+        if (p.f.b_recursion && rand() < 0.15) this.echoCast(w, 1, 0.1);
       }
     }
   }
+  /** Fire a weapon again shortly, at `share` of its damage (the stats are snapshotted now). */
+  private echoCast(w: Weapon, share: number, delay: number): void {
+    const s = Object.assign({}, w.s!, { dmg: w.s!.dmg * share });
+    this.after(delay, () => { if (this.state === 'over' || !this.player.weapons.includes(w)) return; w.def.fire!(this, w, s); });
+  }
+  /** Highest level a weapon can reach: its max, plus Overdrive levels once it has evolved. */
+  weaponCap(w: Weapon): number {
+    if (!w.evolved) return w.def.max;
+    const p = this.player, f = p.f;
+    return w.def.max + OVERDRIVE_BASE + ((p.weaponLevels[w.id] || 0) >= 20 ? 2 : 0) + (f.u_sunshard ? 1 : 0) + (f.b_dawncrown ? 2 : 0);
+  }
+  /** Highest level a passive can reach: Overflow adds levels past the max (not for the +Amount mirror). */
+  passiveCap(ps: PassiveInstance): number { return ps.def.max + (this.player.f.sw_overflow && ps.def.max >= 5 ? OVERFLOW_LEVELS : 0); }
   /** Run `fn` after `t` seconds of simulation time. */
   after(t: number, fn: () => void): void { if (t <= 0) { fn(); return; } this.timers.push({ t, fn }); }
 
@@ -761,12 +874,17 @@ export class Game {
       if (f.res_ice && (st.chill || st.freeze)) dmg *= 1.2;
       if (f.res_blight && tags && tags.includes('poison')) { dmg *= 1.4; e.weakT = 2; e.weak = 0.7; }
       if (e.hexed) dmg *= HEX.dmgTaken;
+      if (f.set_ember && st.burn) dmg *= 1.15;
+      if (f.u_reaper && (e.elite || e.boss) && e.hp < e.maxHp * 0.15) dmg *= 2;
       // Bastion Knight: real weapon hits are judged against its shield (ticks, reactions, thorns bypass it)
       if (e.face !== undefined && w && !info.thorns && w.id !== 'burn' && w.id !== 'bleed' && w.id !== 'reaction') dmg *= this.shieldMul(e, info);
     }
     dmg = Math.max(0, dmg);
     if (e.barrier && e.barrier > 0 && dmg > 0) { const a = Math.min(e.barrier, dmg); e.barrier -= a; dmg -= a; e.barrierAt = this.time + 5; if (e.barrier <= 0) { this.fx.ring(e.x, e.y, e.r * 1.8, '#7dd3fc'); this.fx.burst(e.x, e.y, '#7dd3fc', 14, { speed: 160, life: 0.5 }); } }
+    const hpBefore = e.hp;
     e.hp -= dmg; e.hitFlash = 0.08;
+    // cull: a struck non-boss below the threshold dies outright
+    if (e.hp > 0 && !e.boss && p.stats.cull > 0 && e.hp < e.maxHp * p.stats.cull) { e.hp = 0; info.culled = true; }
     if (e.escapeT !== undefined && dmg > 0) e.st.stagger = e.def.flee!.stagger; // the Hoarder stumbles under its sack when struck
     if (info.knock && !e.boss && e.mass < 30 && !e.immobile) { const [kx, ky] = U.norm(info.kx == null ? e.x - p.x : info.kx, info.ky == null ? e.y - p.y : info.ky); const f = (info.knock * 180 * (1 + p.stats.knockback)) / Math.max(0.5, e.mass); e.vx += kx * f; e.vy += ky * f; }
     if (w) { const key = dmgKey(w); this.dmgByWeapon[key] = (this.dmgByWeapon[key] || 0) + dmg; if (w.dmgDealt != null) w.dmgDealt += dmg; }
@@ -780,18 +898,48 @@ export class Game {
     // uniques on hit
     if (p.f.u_ignite && rand() < 0.1) this.applyStatus(e, 'burn', { dur: 2, dps: dmg * 0.5 });
     if (p.f.u_frost && rand() < 0.05) this.applyStatus(e, 'freeze', { dur: 1 });
+    if (f.set_ember && rand() < 0.15) this.applyStatus(e, 'burn', { dur: 2, dps: dmg * 0.4 });
+    if (f.set_frost && rand() < 0.08) this.applyStatus(e, 'freeze', { dur: 1 });
+    if (p.covenantUntil > this.time && dmg > 0 && !info.thorns) this.applyStatus(e, 'burn', { dur: 2, dps: dmg * 0.35 });
     info.dmg = dmg; info.crit = crit;
     if (h && h.onHit && !info.execute && !(w && w.noMark)) h.onHit(this, p, e, info);
     // elements & run synergies (only real weapon hits: not burns, reactions or other derived damage)
     if (tags && !e.dead && e.hp > 0) {
       if (st.shock && f.res_storm && (st.arcAt ?? 0) <= this.time) { st.arcAt = this.time + 1; const o = this.nearestEnemy(e.x, e.y, 170, (x) => x !== e); if (o) { this.fx.beam(e.x, e.y, o.x, o.y, '#fde047', 2, 0.15); this.damageEnemy(o, dmg * 0.4, { weapon: { id: 'resonance' }, knock: 0.2 }); this.applyStatus(o, 'shock', { dur: 3 }); } }
       if (tags.includes('lightning')) this.applyStatus(e, 'shock', { dur: 3 });
-      if (crit && f.res_steel) this.applyStatus(e, 'bleed', { dur: 3, dps: dmg * 0.25 });
-      if (f.b_prism && rand() < 0.06) { const r = rand(); if (r < 0.34) this.applyStatus(e, 'burn', { dur: 3, dps: dmg * 0.3 }); else if (r < 0.67) this.applyStatus(e, 'chill', { dur: 2, power: 0.3 }); else this.applyStatus(e, 'shock', { dur: 3 }); }
+      if (crit && (f.res_steel || f.sw_bleed)) this.applyStatus(e, 'bleed', { dur: 3, dps: dmg * 0.25 });
+      const prism = (f.b_prism ? 0.06 : 0) + (f.ks_conduit ? 0.12 : 0);
+      if (prism && rand() < prism) { const r = rand(); if (r < 0.34) this.applyStatus(e, 'burn', { dur: 3, dps: dmg * 0.3 }); else if (r < 0.67) this.applyStatus(e, 'chill', { dur: 2, power: 0.3 }); else this.applyStatus(e, 'shock', { dur: 3 }); }
+      if ((w as Weapon).apex && rand() < APOTHEOSIS.imbue) this.imbue(e, w as Weapon, tags, dmg);
       if (crit && f.b_volatile && rand() < 0.25) { const x = e.x, y = e.y, d = dmg * 0.35; this.after(0.05, () => this.explode(x, y, 45, d, { id: 'boon' }, { color: '#ffb347', small: true, quiet: true, knock: 0.4 })); }
     }
-    if (e.hp <= 0) this.killEnemy(e, info);
+    if (e.hp <= 0) {
+      this.killEnemy(e, info);
+      // Avatar of Ruin: what the killing blow had left over strikes the nearest enemy (one hop, never chained)
+      const over = dmg - Math.max(0, hpBefore);
+      if (p.f.ks_ruin && over > 1 && !info.overkill && !info.culled) { const o = this.nearestEnemy(e.x, e.y, 160); if (o) { this.fx.beam(e.x, e.y, o.x, o.y, '#ff7043', 2, 0.12); this.damageEnemy(o, over, { weapon: SRC_KEYSTONE, overkill: true, quiet: true, knock: 0.3 }); } }
+    }
     return dmg;
+  }
+  /** Apotheosis: a weapon's hits carry its element (by its first tag that has one). */
+  private imbue(e: Enemy, w: Weapon, tags: string[], dmg: number): void {
+    if (e.dead || e.hp <= 0) return;
+    const p = this.player;
+    for (const t of tags) {
+      switch (t) {
+        case 'fire': this.applyStatus(e, 'burn', { dur: 3, dps: dmg * 0.4 }); return;
+        case 'ice': this.applyStatus(e, 'chill', { dur: 2, power: 0.4, stackFreeze: 3 }); return;
+        case 'lightning': { this.applyStatus(e, 'shock', { dur: 3 }); const o = this.nearestEnemy(e.x, e.y, 150, (x) => x !== e); if (o) { this.fx.beam(e.x, e.y, o.x, o.y, '#fde047', 2, 0.12); this.damageEnemy(o, dmg * 0.3, { weapon: w, quiet: true, knock: 0.2 }); } return; }
+        case 'holy': if (e.elite || e.boss) this.damageEnemy(e, dmg * 0.25, { weapon: w, quiet: true }); this.heal(Math.min(2, p.stats.maxHp * 0.002), true, true); return;
+        case 'physical': case 'blood': this.applyStatus(e, 'bleed', { dur: 3, dps: dmg * 0.3 }); return;
+        case 'shadow': this.heal(Math.min(p.stats.maxHp * 0.01, dmg * 0.02), true, true); return;
+        case 'poison': e.weakT = 3; e.weak = 0.7; return;
+        case 'magic': for (let k = 0; k < 2; k++) this.spawnProj({ x: e.x, y: e.y, angle: rand() * TAU, speed: 320, r: 4, dmg: dmg * 0.25, pierce: 1, life: 0.5, weapon: w, sprite: { kind: 'orb', color: '#c7d9ff', size: 4 }, noOnHit: true }); return;
+        case 'earth': case 'wind': if (!e.boss) e.st.stun = Math.max(e.st.stun || 0, 0.3); return;
+        case 'void': this.pullEnemies(e.x, e.y, 120, 900); return;
+        case 'summon': if (this.alliesOf('wraith').length < 8) this.spawnAlly({ kind: 'wraith', x: e.x, y: e.y, color: '#c084fc', life: 5, speed: 240, dmg: () => (12 + p.level * 1.4) * p.stats.might * (1 + p.stats.minionDmg), weapon: w }); return;
+      }
+    }
   }
   /** Bastion Knight shield: hits from the front arc are blocked down, hits from behind land harder. */
   private shieldMul(e: Enemy, info: DamageInfo): number {
@@ -865,6 +1013,7 @@ export class Game {
     e.dead = true;
     const p = this.player;
     this.kills++; p.kills++;
+    this.lastKillAt = this.time;
     this.enemyKills[e.type] = (this.enemyKills[e.type] || 0) + 1;
     if (info.weapon) { const key = dmgKey(info.weapon); this.killsBySource[key] = (this.killsBySource[key] || 0) + 1; }
     this.fx.death(e);
@@ -883,7 +1032,10 @@ export class Game {
     if (sh && e.st.freeze) { const x = e.x, y = e.y; this.after(0.05, () => this.explode(x, y, 70, sh.dmg, sh.w, { color: '#e0f2fe', small: true, quiet: true, knock: 0.4 })); this.fx.burst(x, y, '#e0f2fe', 12, { speed: 170, life: 0.45 }); }
     if (f.res_fire && e.st.burn) { const x = e.x, y = e.y, d = e.st.burn.dps * 1.5 + 8 * p.stats.might; this.after(0.05, () => this.explode(x, y, 60, d, { id: 'resonance' }, { color: '#ff7a3c', small: true, quiet: true, knock: 0.5 })); }
     if (f.b_chain && !e.boss && rand() < 0.12) { const x = e.x, y = e.y, d = Math.min(e.maxHp * 0.3, (20 + p.level * 4) * p.stats.might); this.after(0.08, () => this.explode(x, y, 70, d, { id: 'boon' }, { color: '#fb923c', small: true, quiet: true })); }
-    if (f.res_umbra && rand() < 0.04 && this.alliesOf('wraith').length < 8) this.spawnAlly({ kind: 'wraith', x: e.x, y: e.y, color: '#c084fc', life: 8, speed: 240, dmg: () => (14 + p.level * 1.6) * p.stats.might * (1 + p.stats.minionDmg), weapon: { id: 'resonance' } });
+    // shades: Umbra resonance, Gravecaller and Lord of the Hollow (Starweb)
+    const shade = (f.res_umbra ? 0.04 : 0) + (f.sw_shades ? 0.03 : 0) + (f.ks_hollow ? 0.08 : 0);
+    if (shade && rand() < shade && this.alliesOf('wraith').length < (f.ks_hollow ? 14 : 8)) this.spawnAlly({ kind: 'wraith', x: e.x, y: e.y, color: '#c084fc', life: 8, speed: 240, dmg: () => (14 + p.level * 1.6) * p.stats.might * (1 + p.stats.minionDmg), weapon: f.res_umbra ? { id: 'resonance' } : SRC_STAR, explode: f.ks_hollow ? { r: 60, mult: 1.5 } : undefined });
+    if (f.sw_siphon && (e.elite || e.boss)) this.heal(p.stats.maxHp * 0.05);
     if (f.b_harvest && this.kills % 150 === 0 && this.harvestMight < 0.4) this.harvestMight = Math.min(0.4, this.harvestMight + 0.01);
     const h = p.char.hooks; if (h && h.onKill) h.onKill(this, p, e);
     if (p.f.u_soulreaver) this.runMight = Math.min(0.4, this.runMight + 0.0003);
@@ -905,6 +1057,7 @@ export class Game {
       const n = (U.randi(2, 4) + Math.floor(p.stats.matFind * 3) + (e.affixes ? e.affixes.length : 0)) * (p.f.b_hunter ? 2 : 1);
       for (let i = 0; i < n; i++) this.spawnPickup(this.pop({ kind: 'mat', mat: rand() < 0.2 * this.stage.tier ? 'dust' : 'iron', x: e.x + U.rand(-24, 24), y: e.y + U.rand(-24, 24) }));
       if (rand() < 0.35) this.spawnPickup(this.pop({ kind: 'ember', x: e.x + U.rand(-20, 20), y: e.y + U.rand(-20, 20), value: 1 }));
+      if (this.torment > 0 && rand() < eclipseEliteChance(this.torment)) this.spawnPickup(this.pop({ kind: 'mat', mat: 'eclipse', x: e.x, y: e.y }));
     }
     if (e.boss) {
       this.spawnPickup({ kind: 'bosschest', x: e.x, y: e.y });
@@ -913,6 +1066,9 @@ export class Game {
       drops.forEach(([m, n]) => { for (let i = 0; i < Math.round(n * (1 + p.stats.matFind)); i++) this.spawnPickup(this.pop({ kind: 'mat', mat: m, x: e.x + U.rand(-40, 40), y: e.y + U.rand(-40, 40) })); });
       const emb = 3 + e.bossTier * 2 + Math.floor(this.heat * 0.5);
       for (let i = 0; i < emb; i++) this.spawnPickup(this.pop({ kind: 'ember', x: e.x + U.rand(-50, 50), y: e.y + U.rand(-50, 50), value: 1 }));
+      // Eclipse Shards: Torment Heralds, and every Herald after the Eclipse
+      const shards = eclipseBossShards(this.torment) + (this.eclipse ? 1 : 0);
+      for (let i = 0; i < shards; i++) this.spawnPickup(this.pop({ kind: 'mat', mat: 'eclipse', x: e.x + U.rand(-30, 30), y: e.y + U.rand(-30, 30) }));
     }
     // Gilded Hoarder: a fountain of gold, gems and materials around a guaranteed chest
     if (e.def.flee) {
@@ -928,6 +1084,7 @@ export class Game {
   }
   private onBossKilled(e: Enemy): void {
     this.bossKills++; const id = e.bossId ?? e.type; this.bossKillsBy[id] = (this.bossKillsBy[id] || 0) + 1;
+    this.lastBossTier = e.bossTier;
     // another boss may still be alive (late-game tiers overlap): keep its health bar up
     if (this.boss === e) this.boss = this.enemies.find((o) => o.boss && !o.dead) ?? null;
     if (this.player.f.u_banner) { this.bannerMight += 0.08; this.recalc(); }
@@ -969,7 +1126,7 @@ export class Game {
   }
   /** Elites roll affixes (more as the night deepens) that change how they fight. */
   private rollAffixes(e: Enemy): void {
-    const m = this.diff.minute, n = m < 10 ? 1 : m < 22 ? 2 : 3;
+    const m = this.diff.minute, n = (m < 10 ? 1 : m < 22 ? 2 : 3) + (this.torment >= TORMENT_EXTRA_AFFIX ? 1 : 0);
     const pool = ELITE_AFFIXES.filter((a) => a.minute <= m && !(a.id === 'brood' && e.def.split));
     const out: string[] = [];
     while (out.length < n && pool.length) { const a = pool.splice(Math.floor(rand() * pool.length), 1)[0]!; out.push(a.id); }
@@ -1710,8 +1867,14 @@ export class Game {
   }
   private collect(k: Pickup): void {
     const p = this.player, value = k.value ?? 0;
-    if (k.kind === 'gem') { this.gainXp(value); this.sfx('gem', Math.min(24, Math.floor((this.gemCombo = (this.gemCombo || 0) + 1) / 4))); this.gemComboT = 0.5; }
-    else if (k.kind === 'gold') { const v = Math.round(value * p.stats.greed); this.gold += v; this.sfx('gold'); this.fx.text(p.x, p.y - 26, '+' + v + ' gold', '#f5c542'); if (p.f.u_goldheal) this.heal(1, true, true); }
+    if (k.kind === 'gem') {
+      this.gainXp(value); this.sfx('gem', Math.min(24, Math.floor((this.gemCombo = (this.gemCombo || 0) + 1) / 4))); this.gemComboT = 0.5;
+      if (p.f.u_lantern && ++this.lanternGems >= 150) { this.lanternGems = 0; this.heal(p.stats.maxHp * 0.05); }
+    }
+    else if (k.kind === 'gold') {
+      const v = Math.round(value * p.stats.greed); this.gold += v; this.sfx('gold'); this.fx.text(p.x, p.y - 26, '+' + v + ' gold', '#f5c542'); if (p.f.u_goldheal) this.heal(1, true, true);
+      if (p.f.set_midas && this.midasMight < 0.3) { this.midasGold += v; while (this.midasGold >= 200 && this.midasMight < 0.3) { this.midasGold -= 200; this.midasMight = Math.min(0.3, this.midasMight + 0.01); } this.recalc(); }
+    }
     else if (k.kind === 'food') { this.heal(p.stats.maxHp * (p.f.moreFood ? 0.42 : 0.28)); }
     else if (k.kind === 'magnet') { for (const o of this.pickups) if (o.kind === 'gem' || o.kind === 'gold' || o.kind === 'mat' || o.kind === 'ember') o.pull = true; this.fx.ring(p.x, p.y, 600, '#4fd1ff'); this.sfx('pickup'); }
     else if (k.kind === 'bomb') { const list = this.enemiesInRadius(p.x, p.y, 900); list.forEach((e) => this.damageEnemy(e, e.boss ? e.maxHp * 0.1 : e.hp + 1, { quiet: true, weapon: null, noBlast: true })); this.fx.flash('#fff', 0.8); this.fx.shake(14); this.sfx('explode'); }
@@ -1770,7 +1933,7 @@ export class Game {
     let msg = def.name;
     if (s.kind === 'blood') {
       p.hp = Math.max(1, p.hp * 0.75); p.hurtFlash = 0.2;
-      const ws = p.weapons.filter((w) => w.level < w.def.max), ps = p.passives.filter((x) => x.level < x.def.max);
+      const ws = p.weapons.filter((w) => w.level < this.weaponCap(w)), ps = p.passives.filter((x) => x.level < this.passiveCap(x));
       if (ws.length) { const w = U.pick(ws); w.level++; msg = def.name + ': ' + w.def.name + ' → Lv ' + w.level; }
       else if (ps.length) { const x = U.pick(ps); x.level++; msg = def.name + ': ' + x.def.name + ' → Lv ' + x.level; }
       else { this.chestQueue.push({ boss: false }); }
@@ -1824,31 +1987,50 @@ export class Game {
     if (f.u_starfall) { this.uStarT = (this.uStarT || 8) - dt; if (this.uStarT <= 0) { this.uStarT = 8; const e = this.randomEnemyNear(p.x, p.y, 420); if (e) { const x = e.x, y = e.y; this.meteor(x, y, 0.7, () => this.explode(x, y, 80, (60 + p.level * 6) * p.stats.might, { id: 'unique' }, { color: '#fde68a' })); } } }
     if (f.magnetPulse) { this.pulseT = (this.pulseT || 60) - dt; if (this.pulseT <= 0) { this.pulseT = 60; for (const o of this.pickups) if (o.kind === 'gem') o.pull = true; this.fx.ring(p.x, p.y, 500, '#4fd1ff', { thin: true }); } }
     if (f.timedLevels) { this.tlT = (this.tlT || 300) - dt; if (this.tlT <= 0) { this.tlT = 300; this.gainLevel(); this.notice('Sigil of the Timeless: free level!', '#fbbf24'); } }
+    // fourth round: Starweb notables, uniques and boons that tick
+    if (f.sw_static) { this.staticT -= dt; if (this.staticT <= 0) { this.staticT = 5; this.eachEnemyIn(p.x, p.y, 220, (e) => this.applyStatus(e, 'shock', { dur: 3 })); this.fx.ring(p.x, p.y, 220, '#7dd3fc', { thin: true }); } }
+    if (f.sw_fortress && this.time - this.lastHurtAt > 4 && p.hp > 0) this.addShield(p.stats.maxHp * 0.02 * dt);
+    if (f.b_hunger && this.time - this.lastKillAt > 1 && p.hp > 1) p.hp = Math.max(1, p.hp - p.stats.maxHp * 0.01 * dt);
+    if (f.u_hourglass) { this.hourglassT -= dt; if (this.hourglassT <= 0) { this.hourglassT = 30; this.eachEnemyIn(p.x, p.y, 700, (e) => this.applyStatus(e, e.boss ? 'chill' : 'freeze', { dur: 1.5, power: 0.6, noMul: true })); this.fx.flash('#b28dff', 0.3); this.sfx('freeze'); } }
+    if (f.b_mantle) { const on = p.hp < p.stats.maxHp * 0.5; if (on !== this.mantleOn) { this.mantleOn = on; this.recalc(); if (on) { this.fx.ring(p.x, p.y, 90, '#f87171'); this.fx.text(p.x, p.y - 40, "HERALD'S RAGE", '#f87171'); } } }
+    // timed buffs that live on the player expire into a recalc
+    if ((p.tranceUntil && p.tranceUntil <= this.time) || (p.echoUntil && p.echoUntil <= this.time)) { if (p.tranceUntil <= this.time) p.tranceUntil = 0; if (p.echoUntil <= this.time) p.echoUntil = 0; this.recalc(); }
   }
 
   /* ==================== LEVEL UP / CHESTS ==================== */
   genOptions(): LevelOption[] {
-    const p = this.player, pool: UpgradeOption[] = [];
+    const p = this.player, f = p.f, pool: UpgradeOption[] = [];
     const wOwned = p.weapons.map((w) => w.id), pOwned = p.passives.map((x) => x.id);
-    for (const w of p.weapons) if (w.level < w.def.max && !this.banished.has(w.id)) pool.push({ type: 'weapon', id: w.id, def: w.def, level: w.level + 1, weight: w.id === p.char.signature ? 4 : 3 });
+    // weapons below their cap (Overdrive levels keep evolved weapons in the pool)
+    for (const w of p.weapons) if (w.level < this.weaponCap(w) && !this.banished.has(w.id)) pool.push({ type: 'weapon', id: w.id, def: w.def, level: w.level + 1, weight: (w.id === p.char.signature ? 4 : 3) * (w.level >= w.def.max ? 0.6 : 1) });
     if (p.weapons.length < p.slots.w) for (const id in WEAPONS) { const d = WEAPONS[id]; if (d.char && d.char !== p.char.id) continue; if (wOwned.includes(id) || this.banished.has(id)) continue; pool.push({ type: 'weapon', id, def: d, level: 1, isNew: true, weight: 1 }); }
-    for (const ps of p.passives) if (ps.level < ps.def.max && !this.banished.has(ps.id)) pool.push({ type: 'passive', id: ps.id, def: ps.def, level: ps.level + 1, weight: 2.5 });
+    for (const ps of p.passives) if (ps.level < this.passiveCap(ps) && !this.banished.has(ps.id)) pool.push({ type: 'passive', id: ps.id, def: ps.def, level: ps.level + 1, weight: ps.level >= ps.def.max ? 1.2 : 2.5 });
     if (p.passives.length < p.slots.p) for (const d of PASSIVES) { if (pOwned.includes(d.id) || this.banished.has(d.id)) continue; let w = 1; for (const wp of p.weapons) if (wp.def.evo && wp.def.evo.with === d.id && !wp.evolved) w = 2; pool.push({ type: 'passive', id: d.id, def: d, level: 1, isNew: true, weight: w }); }
+    // Ability Rank (never under the Oath of Silence)
+    if ((p.abilityRank || 0) < ABILITY_RANK_MAX && !f.b_silence && !this.banished.has('ability')) pool.push({ type: 'ability', id: 'ability', level: (p.abilityRank || 0) + 1, weight: 1.4 });
     let n = 3;
-    if (p.f.extraChoice || rand() < Math.min(0.6, (p.stats.luck - 1) * 0.5)) n = 4;
+    if (f.extraChoice || rand() < Math.min(0.6, (p.stats.luck - 1) * 0.5)) n = 4;
+    if (f.b_bloodprice) n += 2;
     const out: LevelOption[] = [];
     while (out.length < n && pool.length) { const pick = U.weightedPick(pool, (o) => o.weight); pool.splice(pool.indexOf(pick), 1); out.push(pick); }
     if (!out.length) { out.push({ type: 'gold', value: Math.round((80 + this.diff.minute * 25) * p.stats.greed) }); out.push({ type: 'heal', value: 0.3 }); }
-    // empowered chance from luck
-    for (const o of out) if (o.type !== 'gold' && o.type !== 'heal' && !o.isNew && rand() < 0.04 * p.stats.luck) { const cur = o.type === 'weapon' ? p.weapons.find((w) => w.id === o.id) : p.passives.find((x) => x.id === o.id); if (cur && cur.level + 2 <= cur.def.max) { o.empowered = true; o.level = cur.level + 2; } }
+    // empowered chance from luck (Fated triples it; the Gambler's Oath guarantees one card in four)
+    const emp = Math.max(f.ks_gamble ? 0.25 : 0, 0.04 * p.stats.luck * (f.sw_fated ? 3 : 1));
+    for (const o of out) {
+      if ((o.type !== 'weapon' && o.type !== 'passive') || o.isNew || rand() >= emp) continue;
+      if (o.type === 'weapon') { const cur = p.weapons.find((w) => w.id === o.id); if (cur && cur.level + 2 <= this.weaponCap(cur)) { o.empowered = true; o.level = cur.level + 2; } }
+      else { const cur = p.passives.find((x) => x.id === o.id); if (cur && cur.level + 2 <= this.passiveCap(cur)) { o.empowered = true; o.level = cur.level + 2; } }
+    }
     return out;
   }
   pickOption(o: LevelOption): void {
     const p = this.player;
     if (o.type === 'weapon') { const w = p.weapons.find((x) => x.id === o.id); if (w) w.level = o.level; else this.addWeapon(o.id); }
     else if (o.type === 'passive') { const ps = p.passives.find((x) => x.id === o.id); if (ps) ps.level = o.level; else this.addPassive(o.id); }
+    else if (o.type === 'ability') { p.abilityRank = Math.min(ABILITY_RANK_MAX, o.level); this.fx.ring(p.x, p.y, 70, p.char.colors.accent); }
     else if (o.type === 'gold') { this.gold += o.value; }
     else if (o.type === 'heal') { this.heal(p.stats.maxHp * o.value, true); }
+    if (p.f.b_bloodprice && p.hp > 1) { p.hp = Math.max(1, p.hp * 0.96); p.hurtFlash = 0.15; }
     this.recalc();
     this.levelQueue--; this.sfx('levelup');
     if (this.levelQueue <= 0) { this.levelQueue = 0; this.state = 'play'; }
@@ -1858,28 +2040,40 @@ export class Game {
   skip(): boolean { const p = this.player; if (p.skips <= 0) return false; p.skips--; this.levelQueue--; if (this.levelQueue <= 0) { this.levelQueue = 0; this.state = 'play'; } else { this.state = 'levelup'; this.events.emit('levelUp', this.genOptions()); } return true; }
   banish(o: LevelOption): LevelOption[] | null { const p = this.player; if (p.banishes <= 0) return null; p.banishes--; if (o.id) this.banished.add(o.id); return this.genOptions(); }
   evolvable(): Weapon[] { const p = this.player; return p.weapons.filter((w) => w.def.evo && !w.evolved && w.level >= w.def.max && p.passives.some((ps) => ps.id === w.def.evo!.with)); }
+  /** Evolved weapons ready for Apotheosis: Overdrive III, and Weapon Mastery 10 (Ascension VIII waives it for the signature). */
+  apotheosable(): Weapon[] {
+    const p = this.player;
+    return p.weapons.filter((w) => w.evolved && !w.apex && w.level - w.def.max >= APOTHEOSIS_OVERDRIVE && ((p.weaponLevels[w.id] || 0) >= APOTHEOSIS_MASTERY || (p.f.asc_sigapex && w.id === p.char.signature)));
+  }
   private openChest(c: ChestRequest): void {
     const p = this.player, rewards: ChestReward[] = [];
-    const ev = this.evolvable();
+    const ev = this.evolvable(), ap = ev.length ? [] : this.apotheosable();
     if (ev.length) {
       const w = ev[0]!, evo = w.def.evo!; w.evolved = true; this.evolves++;
       rewards.push({ type: 'evolve', def: w.def, name: evo.name, icon: evo.icon, desc: evo.desc });
       this.fx.flash('#fff', 0.9); this.sfx('evolve');
       this.story('evolve', w.id);
+    } else if (ap.length) {
+      const w = ap[0]!, evo = w.def.evo!; w.apex = true; this.apotheoses++;
+      rewards.push({ type: 'apotheosis', def: w.def, name: 'Exalted ' + evo.name, icon: evo.icon, desc: apotheosisDesc(w.def) });
+      this.fx.flash('#fde68a', 1); this.fx.timeWarp(0.3, 0.6); this.sfx('evolve');
+      this.story('evolve', w.id);
     } else {
       let n = 1;
       const r = rand(), luck = p.stats.chestLuck + (p.stats.luck - 1) * 0.5;
       if (c.boss) n = 5; else if (r < 0.06 + luck * 0.15) n = 5; else if (r < 0.28 + luck * 0.4) n = 3;
+      if (p.f.ks_gamble) n = Math.max(3, n);
       for (let i = 0; i < n; i++) {
         const ups: ({ type: 'weapon'; obj: Weapon; def: WeaponDef } | { type: 'passive'; obj: PassiveInstance; def: PassiveDef })[] = [];
-        for (const w of p.weapons) if (w.level < w.def.max) ups.push({ type: 'weapon', obj: w, def: w.def });
-        for (const ps of p.passives) if (ps.level < ps.def.max) ups.push({ type: 'passive', obj: ps, def: ps.def });
+        for (const w of p.weapons) if (w.level < this.weaponCap(w)) ups.push({ type: 'weapon', obj: w, def: w.def });
+        for (const ps of p.passives) if (ps.level < this.passiveCap(ps)) ups.push({ type: 'passive', obj: ps, def: ps.def });
         if (!ups.length) { const g = Math.round((30 + this.diff.minute * 8) * p.stats.greed); this.gold += g; rewards.push({ type: 'gold', value: g }); continue; }
         const u = U.pick(ups); u.obj.level++; rewards.push(u.type === 'weapon' ? { type: 'weapon', def: u.def, level: u.obj.level } : { type: 'passive', def: u.def, level: u.obj.level });
       }
       this.sfx('chest');
     }
     const gold = Math.round((40 + this.diff.minute * 15) * (c.boss ? 4 : 1) * p.stats.greed); this.gold += gold; rewards.push({ type: 'gold', value: gold });
+    if (p.f.sw_hunter) { this.embers++; this.fx.text(p.x, p.y - 40, '+1 Soul Ember', '#ff8a3c'); }
     const matN = (c.boss ? 3 : 1) + Math.floor(p.stats.matFind * 2);
     for (let i = 0; i < matN; i++) { const m: MaterialId = c.boss ? U.pick(['dust', 'crystal', 'dust'] as const) : (rand() < 0.25 ? 'dust' : 'iron'); this.mats[m]++; rewards.push({ type: 'mat', mat: m }); }
     this.recalc();
@@ -1891,10 +2085,21 @@ export class Game {
   /** Three boons the player doesn't own yet (deterministic). */
   boonOptions(): BoonDef[] {
     const own = this.player.boons as string[];
-    const pool = BOONS.filter((b) => !own.includes(b.id)), out: BoonDef[] = [];
-    while (out.length < 3 && pool.length) out.push(pool.splice(Math.floor(rand() * pool.length), 1)[0]!);
+    const pool = BOONS.filter((b) => !own.includes(b.id) && b.rarity !== 'legendary'), out: BoonDef[] = [];
+    while (out.length < 3 && pool.length) {
+      const b = pool.splice(Math.floor(rand() * pool.length), 1)[0]!;
+      // at most one cursed bargain per offering
+      if (b.rarity === 'cursed' && out.some((x) => x.rarity === 'cursed')) continue;
+      out.push(b);
+    }
+    // legendary boons: from tiered Heralds, after the Eclipse, or in Torment III+
+    if (this.legendaryBoonsAllowed() && out.length && rand() < LEGENDARY_BOON_CHANCE) {
+      const leg = BOONS.filter((b) => b.rarity === 'legendary' && !own.includes(b.id));
+      if (leg.length) out[Math.floor(rand() * out.length)] = leg[Math.floor(rand() * leg.length)]!;
+    }
     return out;
   }
+  legendaryBoonsAllowed(): boolean { return this.lastBossTier > 0 || this.eclipse || this.torment >= 3; }
   pickBoon(b: BoonDef | null): void {
     const p = this.player;
     if (b) {
@@ -1912,17 +2117,18 @@ export class Game {
 
   /* ==================== END OF RUN ==================== */
   summary(): RunSummary {
-    const p = this.player, stage = this.stage, heatB = heatBonus(this.heat);
+    const p = this.player, stage = this.stage, heatB = heatBonus(this.heat) * tormentReward(this.torment);
     const timeBonus = Math.round(this.time * 1.2 + this.kills * 0.08);
     const gold = Math.round((this.gold + timeBonus) * stage.reward * heatB);
     const embers = Math.round(this.embers * (p.f.emberBonus ? 1.5 : 1) * (1 + this.heat * 0.05));
     const charXp = Math.round((this.time * 2 + this.kills * 0.5 + p.level * 12 + this.bossKills * 150 + this.elites * 20) * (1 + p.stats.xpBonus) * Math.sqrt(stage.reward) * heatB);
-    const mats = { iron: Math.round(this.mats.iron * heatB), dust: Math.round(this.mats.dust * heatB), crystal: this.mats.crystal, star: this.mats.star };
+    const mats = { iron: Math.round(this.mats.iron * heatB), dust: Math.round(this.mats.dust * heatB), crystal: this.mats.crystal, star: this.mats.star, eclipse: this.mats.eclipse };
     return {
       charId: p.char.id, stageId: stage.id, seed: this.seed, time: this.time, kills: this.kills, level: p.level, bossKills: this.bossKills, elites: this.elites, evolves: this.evolves, heat: this.heat,
       gold, embers, charXp, mats, enemyKills: this.enemyKills, bossKillsBy: this.bossKillsBy, dmgByWeapon: this.dmgByWeapon, killsBySource: this.killsBySource,
-      weapons: p.weapons.map((w) => ({ id: w.id, level: w.level, evolved: w.evolved, dmg: w.dmgDealt })), passives: p.passives.map((x) => ({ id: x.id, level: x.level })), eclipse: this.eclipse,
+      weapons: p.weapons.map((w) => ({ id: w.id, level: w.level, evolved: w.evolved, apex: !!w.apex, dmg: w.dmgDealt })), passives: p.passives.map((x) => ({ id: x.id, level: x.level })), eclipse: this.eclipse,
       killedBy: this.lastHitBy, bestCombo: this.bestCombo, reactions: this.reactions, boons: (p.boons as string[]).slice(), shrines: this.shrinesUsed,
+      torment: this.torment, apotheoses: this.apotheoses, abilityRank: p.abilityRank || 0, art: this.art ? this.art.id : null, artUses: this.artUses,
     };
   }
   quit(): void { this.state = 'over'; }

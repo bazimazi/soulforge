@@ -26,7 +26,10 @@ export type ChronicleUnlock =
   | { kind: 'time'; v: number }
   | { kind: 'stageTime'; ref: string; v: number }
   | { kind: 'forge'; v: number }
-  | { kind: 'chars'; v: number };
+  | { kind: 'chars'; v: number }
+  | { kind: 'soul'; v: number }
+  | { kind: 'ascension'; v: number }
+  | { kind: 'torment'; v: number };
 export interface ChronicleChapter { id: string; title: string; unlock: ChronicleUnlock; hint: string; text: string[] }
 
 export const CHRONICLE: ChronicleChapter[] = [
@@ -89,6 +92,21 @@ export const CHRONICLE: ChronicleChapter[] = [
     'All right. You have fed the fire long enough to earn the truth, and I have run out of ways to change the subject. When the sun came apart over the cathedral, most of it fell: shards across the world, a city full of fire. But one small piece did not fall. It ran. It hid underground where the Crown could not see, found an old forge, and pretended to be a smith.',
     'That is me. I am the last ember of the Dawn. Not its spirit, not its god; just the last warm coal of it, with a hammer and opinions. For a long time I did not know what I was. I thought I was simply very old and very good at this. Seraphine knew the moment she saw me. She said nothing. She only bowed, very low, and wept.',
     'The Starshards are not ore. They are me. Pieces of me. Every one you carry home, every soul I reforge and send back into the dark, feeds the fire a little more of the old light. I have not only been building better champions. I have been building a morning, one stubborn death at a time.',
+  ] },
+  { id: 'reforged', title: 'The Second Forging', unlock: { kind: 'ascension', v: 1 }, hint: 'Ascend any champion.', text: [
+    'The forge was built to remake the fallen. It was never meant to remake them twice. I want you to know I hesitated. Then I looked at what was waiting in the dark, and I stopped hesitating.',
+    'What comes out of a second forging is not quite the champion who went in. Brighter, mostly. Heavier in the hand. You will notice the fire answers faster now, and that it is harder to put down. That is not a flaw in the work. That is the work.',
+    'Every ascension takes a little more of the sun out of the forge and puts it into you. I did the arithmetic once. Then I stopped doing it. Some sums are better left unfinished.',
+  ] },
+  { id: 'constellations', title: 'Constellations', unlock: { kind: 'soul', v: 15 }, hint: 'Reach Soul Rank 15.', text: [
+    'When the Dawn was murdered its light did not simply go out. It scattered. Into the sky, into the dead, into the forge, into you. Every night you come home a little brighter, and the sky over the citadel is a little less empty.',
+    'I have started mapping it. The old navigators called such things constellations; I call it the Starweb, because everything in it is tied to everything else and I lack imagination. The Smith, the Bulwark, the Wanderer, the Oracle, the Tempest, the Hollow Moon. They were the Dawn’s six moods, once. Now they are yours to light.',
+    'Light enough of them and perhaps the sky will remember its own shape. Perhaps it won’t. Either way you will be harder to kill, and I will take that.',
+  ] },
+  { id: 'dread', title: 'The Dread Tiers', unlock: { kind: 'torment', v: 5 }, hint: 'Survive 15 minutes at Torment 5.', text: [
+    'Below the Night there is a deeper night. I call it Torment, because I could not find a kinder word and I stopped looking. The dead down there have learned your names. They come thicker, they hit harder, and they remember every blade you carry.',
+    'You keep going down anyway. I have stopped asking you not to. What you bring back is worth it: shards of the Eclipse itself, black glass that drinks the lamplight. Starshards are pieces of the sun. These are pieces of what ate it.',
+    'Hold one up to the forge and you will see it: the Eclipse is not a lid on the sky. It is a wound that scabbed over. Wounds can be reopened. I would very much like to be there when you do it.',
   ] },
   { id: 'twelve', title: 'Twelve Candles', unlock: { kind: 'chars', v: 12 }, hint: 'Unlock all 12 champions.', text: [
     'There are twelve of you now. A knight with a burning oath. A girl the sky talks to. A hunter, a priestess, a killer who took it personally. A gravedigger, a queen, a wall that walks. A witch with a passenger, an inventor with forty machines, a countess nobody should trust, and a monk who caught the wind. You are not an army. You are something worse. You are stubborn.',

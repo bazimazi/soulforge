@@ -9,16 +9,20 @@ import { BOSSES, BOSS_ORDER, ELITE_AFFIXES, ENEMIES } from '../data/enemies';
 import { SHRINE_DEFS } from '../data/shrines';
 import { BOSS_LINES, CHRONICLE, PROLOGUE, TIPS } from '../data/story';
 import { COMBO_TIERS, COMBO_WINDOW, REACTION_DEFS, RESONANCES, RESONANCE_BY_TAG, resonanceTier } from '../data/synergy';
-import { ANVIL, ANVIL_BY_ID, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SIGILS, SIGIL_BY_ID, SLOTS, SLOT_BY_ID, TRANSMUTE, UNIQUES, UNIQUE_BY_ID, anvilCost, craftCost, forgeLevelPerks, forgeXpFor, itemAffixValue, reforgeCost, salvageValue, upgradeCost } from '../data/forge';
+import { ANVIL, ANVIL_BY_ID, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SETS, SET_BY_ID, SIGILS, SIGIL_BY_ID, SLOTS, SLOT_BY_ID, TRANSMUTE, UNIQUES, UNIQUE_BY_ID, anvilCost, craftCost, forgeLevelPerks, forgeXpFor, itemAffixValue, reforgeCost, salvageValue, setCounts, upgradeCost } from '../data/forge';
 import type { Reward } from '../data/forge';
 import { MATERIALS, MAT_BY_ID, OMENS, OMEN_BY_ID, PASSIVE_BY_ID, STAGES, STAGE_BY_ID, heatBonus, statFmt, statName } from '../data/passives';
 import { WEAPONS, WH } from '../data/weapons';
-import { DASH, type Game } from '../game/game';
-import type { BoonDef, Chapter, ChestReward, Enemy, EnemyDef, IconSpec, LevelOption, RunSummary } from '../game/types';
+import { ABILITY_RANK_CD, ABILITY_RANK_MAX, ABILITY_RANK_POWER, ASCENSIONS, OVERDRIVE_NAMES, OVERFLOW_VALUE, TORMENT_MAX, applyTorment, overdriveDesc, tormentReward } from '../data/progression';
+import { ART_BY_ID } from '../data/soularts';
+import type { Game } from '../game/game';
+import type { BoonDef, Chapter, ChestReward, DifficultyMods, Enemy, EnemyDef, IconSpec, LevelOption, RunSummary } from '../game/types';
 import { Save } from '../meta/save';
 import type { FX } from '../render/fx';
 import { Sprites as S } from '../render/sprites';
 import { DamageMeter, damageReport } from './dmg-meter';
+import { $, $$, BTN, esc, ic, roman } from './dom';
+import { contractsReady, fmtReward, showAscension, soulRankHtml, type AscTab } from './progression';
 import { MapView } from './minimap';
 import { Narrator } from './narrator';
 
@@ -43,12 +47,6 @@ type KeyHandler = (e: KeyboardEvent) => void;
 /** Delay between the sim reporting death and the summary appearing (lets the death FX play). */
 const GAME_OVER_DELAY_MS = 900;
 
-const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T;
-const $$ = (root: ParentNode, sel: string): NodeListOf<HTMLElement> => root.querySelectorAll<HTMLElement>(sel);
-const ic = (spec: IconSpec, cls = ''): string => `<img class="icon ${cls}" src="${S.iconURL(spec)}" alt="">`;
-const esc = U.esc;
-/** Attributes for a non-<button> element that acts as one (keyboard activation is delegated in init). */
-const BTN = 'role="button" tabindex="0"';
 const matName = (k: string): string => (k === 'gold' ? 'gold' : k === 'embers' ? 'embers' : MAT_BY_ID[k]!.name);
 const fmtLevel = (n: number): string => 'LV ' + n;
 const fmtHp = (hp: number, max: number): string => hp + ' / ' + max;
@@ -142,6 +140,12 @@ interface HudEls {
   reso: HTMLElement;
   buff: HudSlot;
   bossEp: HudSlot;
+  artW: HudSlot;
+  artBtn: HudSlot;
+  artCd: HudSlot;
+  artImg: HTMLImageElement;
+  artLbl: HTMLElement;
+  dashCh: HudSlot;
 }
 
 class UiController {
@@ -150,6 +154,7 @@ class UiController {
   input!: InputManager;
   selChar = 'kael';
   selStage = 'ashen';
+  selTorment = 0;
   forgeTab: ForgeTab = 'anvil';
   codexTab: CodexTab = 'story';
   selItem: string | null = null;
@@ -177,6 +182,7 @@ class UiController {
     const d = Save.data;
     this.selChar = CHAR_BY_ID[d.lastChar] ? d.lastChar : 'kael';
     this.selStage = STAGE_BY_ID[d.lastStage] ? d.lastStage : 'ashen';
+    this.selTorment = Math.min(d.lastTorment || 0, Save.tormentMax(this.selStage));
     this.applyDisplaySettings();
     this.narrator = new Narrator(game);
     this.buildHud();
@@ -257,12 +263,13 @@ class UiController {
     const canContinue = d.stats.runs > 0 && lastC && Save.charData(lastC.id).unlocked && lastS && d.stages.unlocked.includes(lastS.id);
     const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? '';
     this.screen('title', `
-      <div class="title-stats panel" style="padding:8px 14px">${this.currencyBar()}</div>
+      <div class="title-stats panel" style="padding:8px 14px">${this.currencyBar()}${soulRankHtml()}</div>
       <div class="logo"><div class="ember-ring"></div><h1>SOULFORGE</h1><div class="sub">Endless Night</div></div>
       <div class="menu">
         ${canContinue ? `<button class="btn primary continue" id="contBtn"><img src="${S.portraitURL(lastC, 64)}" alt=""><span><b>Continue</b><small>${lastC.name} · ${lastS.name}</small></span></button>` : ''}
         <button class="btn ${canContinue ? '' : 'primary'}" id="playBtn">${canContinue ? 'New Night' : 'Play'}</button>
         <button class="btn" id="talentsBtn">Talents</button>
+        <button class="btn" id="ascendBtn">Ascension${contractsReady() || Save.starPointsFree() > 0 ? ' <span class="badge">!</span>' : ''}</button>
         <button class="btn" id="forgeBtn">Forge</button>
         <button class="btn" id="codexBtn">Codex</button>
         <button class="btn" id="settingsBtn">Settings</button>
@@ -272,6 +279,7 @@ class UiController {
     $('playBtn').onclick = () => { audio.play('ui'); this.showChars(); };
     if (canContinue) $('contBtn').onclick = () => { audio.play('buy'); this.selChar = lastC.id; this.selStage = lastS.id; this.startRun(); };
     $('talentsBtn').onclick = () => { audio.play('ui'); this.showTalents(); };
+    $('ascendBtn').onclick = () => { audio.play('ui'); this.showAscension(contractsReady() && !Save.starPointsFree() ? 'contracts' : 'starweb'); };
     $('forgeBtn').onclick = () => { audio.play('ui'); this.showForge(); };
     $('codexBtn').onclick = () => { audio.play('ui'); this.showCodex(); };
     $('settingsBtn').onclick = () => { audio.play('ui'); this.showSettings(); };
@@ -285,6 +293,9 @@ class UiController {
       if (shown.length < nu.length) setTimeout(() => this.notice(`+${nu.length - shown.length} more unlocks — see the Codex`, '#4ade80', 4), shown.length * 600);
     }
   }
+
+  /** The Ascension hub (Starweb, Champion Ascension, Weapon Mastery, Soul Arts, Night Contracts). */
+  showAscension(tab: AscTab = 'starweb'): void { showAscension(this, tab); }
 
   /** First launch: the Keeper's prologue, one line at a time (click / any key advances, Esc skips). */
   showPrologue(): void {
@@ -313,7 +324,7 @@ class UiController {
     grid.innerHTML = CHARACTERS.map((c) => {
       const cd = Save.charData(c.id);
       return `<div class="char-card ${cd.unlocked ? '' : 'locked'} ${c.id === this.selChar ? 'sel' : ''}" data-id="${c.id}" ${BTN} aria-label="${c.name}">
-        <img src="${S.portraitURL(c)}" alt=""><div class="lvl">Lv ${cd.level}</div><div class="nm">${c.name}</div><div class="tt">${c.title}</div>
+        <img src="${S.portraitURL(c)}" alt=""><div class="lvl">Lv ${cd.level}${cd.ascension ? ' · ' + roman(cd.ascension) : ''}</div><div class="nm">${c.name}</div><div class="tt">${c.title}</div>
         ${cd.unlocked ? '' : `<div class="lock">${ic({ g: 'lock', c: '#999' }, 'sm')}<div>${c.unlock.text || 'Locked'}</div></div>`}</div>`;
     }).join('');
     $$(grid, '.char-card').forEach((el) => el.onclick = () => { this.selChar = el.dataset.id!; audio.play('ui'); $$(grid, '.char-card').forEach((x) => x.classList.toggle('sel', x.dataset.id === this.selChar)); this.renderCharDetail(); });
@@ -329,7 +340,7 @@ class UiController {
     const xpNeed = charXpFor(cd.level);
     const evo = sig.evo;
     $('charDetail').innerHTML = `
-      <div class="char-detail"><div><img class="big-portrait" src="${S.portraitURL(c, 260)}" alt="${c.name}"><h2 style="margin:8px 0 0;color:var(--gold)">${c.name}</h2><div class="muted">${c.title}</div>
+      <div class="char-detail"><div><img class="big-portrait" src="${S.portraitURL(c, 260)}" alt="${c.name}"><h2 style="margin:8px 0 0;color:var(--gold)">${c.name}${cd.ascension ? ` <span class="asc-pip big" title="Ascension ${roman(cd.ascension)}">${roman(cd.ascension)}</span>` : ''}</h2><div class="muted">${c.title}</div>
         <div style="margin:8px 0 4px;font-size:13px" class="muted">Level ${cd.level} · ${U.fmt(cd.xp)} / ${U.fmt(xpNeed)} XP · ${Save.talentPointsFree(c.id)} talent pts free</div><div class="bar"><i style="width:${(cd.xp / xpNeed * 100).toFixed(1)}%"></i></div>
         <p style="font-style:italic;color:#b9b5c8;font-size:14px">${c.lore}</p><div>${chapters}</div></div>
       <div class="col">
@@ -338,8 +349,9 @@ class UiController {
         <div class="kit">${ic({ g: 'star', c: c.colors.accent })}<div><h4>${c.trait.name} <span class="muted" style="font-weight:400;font-size:12px">— trait</span></h4><p>${c.trait.desc}</p></div></div>
         <div class="kit">${ic(c.active.icon)}<div><h4>${c.active.name} <span class="muted" style="font-weight:400;font-size:12px">— active · ${c.active.cd}s · E</span></h4><p>${c.active.desc}</p></div></div>
       </div></div>
-      <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="toTalents">Talents</button><button class="btn primary" id="toSetup" ${cd.unlocked ? '' : 'disabled'}>Continue ▶</button></div>`;
+      <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="toAscend">Ascension</button><button class="btn" id="toTalents">Talents</button><button class="btn primary" id="toSetup" ${cd.unlocked ? '' : 'disabled'}>Continue ▶</button></div>`;
     $('toTalents').onclick = () => { audio.play('ui'); this.showTalents(c.id, () => this.showChars()); };
+    $('toAscend').onclick = () => { audio.play('ui'); this.selChar = c.id; this.showAscension('champions'); };
     $('toSetup').onclick = () => { audio.play('ui'); Save.data.lastChar = c.id; Save.save(); this.showSetup(); };
   }
 
@@ -349,13 +361,25 @@ class UiController {
     if (!d.stages.unlocked.includes(this.selStage)) this.selStage = 'ashen';
     const omensUnlocked = d.stats.bossKills >= 1;
     this.screen('setup', this.head('Choose the Night') + `<div class="screen-body layout-2"><div><h3 class="gold">Stage</h3><div class="stage-list" id="stageList"></div>
+      <div id="tormentBox"></div>
       <h3 class="gold" style="margin-top:20px">Omens <span class="muted" style="font-size:13px;font-weight:400">— optional pacts that raise the Heat. Each Heat: +8% gold, XP and materials.</span></h3>
       ${omensUnlocked ? '<div class="col" id="omenList"></div>' : '<div class="muted panel" style="padding:12px">Defeat your first boss to unlock Omens.</div>'}</div>
       <div class="panel" style="padding:16px;position:sticky;top:10px" id="setupSide"></div></div>`);
     this.bindBack(() => this.showChars());
     const renderStages = (): void => {
       $('stageList').innerHTML = STAGES.map((s) => { const un = d.stages.unlocked.includes(s.id); return `<div class="stage-card ${un ? '' : 'locked'} ${s.id === this.selStage ? 'sel' : ''}" data-id="${s.id}" ${BTN}${un ? '' : ' aria-disabled="true"'}><div class="swatch" style="background:linear-gradient(135deg,${s.pal.groundLight},${s.pal.ground} 60%,${s.pal.groundDark})"></div><h3>${s.name}</h3><div class="tip">${s.desc}</div><div class="row" style="margin-top:6px;font-size:13px"><span class="bad">Difficulty ×${s.diff}</span><span class="gold">Reward ×${s.reward}</span></div><div class="tip">Best: ${U.fmtTime(d.stages.best[s.id] || 0)}${un || !s.unlock ? '' : ` · Unlock: survive ${U.fmtTime(s.unlock.time)} in ${STAGE_BY_ID[s.unlock.stage]!.name}`}</div></div>`; }).join('');
-      $$($('stageList'), '.stage-card').forEach((el) => el.onclick = () => { const id = el.dataset.id!; if (!d.stages.unlocked.includes(id)) return; this.selStage = id; audio.play('ui'); renderStages(); renderSide(); });
+      $$($('stageList'), '.stage-card').forEach((el) => el.onclick = () => { const id = el.dataset.id!; if (!d.stages.unlocked.includes(id)) return; this.selStage = id; this.selTorment = Math.min(this.selTorment, Save.tormentMax(id)); audio.play('ui'); renderStages(); renderTorment(); renderSide(); });
+    };
+    const renderTorment = (): void => {
+      const max = Save.tormentMax(this.selStage), t = this.selTorment, box = $('tormentBox');
+      if (!max) { box.innerHTML = Save.tormentAnywhere() ? `<div class="tip panel" style="padding:10px;margin-top:14px">Torment unlocks on ${STAGE_BY_ID[this.selStage]!.name} after surviving 20:00 here.</div>` : ''; return; }
+      const m: DifficultyMods = { enemyHp: 1, enemyDmg: 1, enemySpeed: 1, spawn: 1, elite: 1, healing: 1, bossHp: 1, bossRate: 1, playerHp: 1, timeScale: 1 };
+      applyTorment(m, t);
+      box.innerHTML = `<h3 class="gold" style="margin-top:20px">Torment <span class="muted" style="font-size:13px;font-weight:400">— the deeper night. Survive 15:00 at a tier to open the next (up to ${TORMENT_MAX}).</span></h3>
+        <div class="panel torment-pick ${t ? 'on' : ''}"><div class="rk"><button id="tDown" aria-label="Lower Torment" ${t > 0 ? '' : 'disabled'}>−</button><b>${t ? 'Torment ' + roman(t) : 'Normal'}</b><button id="tUp" aria-label="Raise Torment" ${t < max ? '' : 'disabled'}>+</button></div>
+        <div class="tip grow">${t ? `Enemy health ×${m.enemyHp.toFixed(1)}, damage ×${m.enemyDmg.toFixed(2)}, Heralds ×${m.bossHp.toFixed(2)}${t >= 4 ? ', elites +1 affix' : ''}${t >= 3 ? ', legendary boons' : ''}. <span class="gold">Rewards ×${tormentReward(t).toFixed(1)} and Eclipse Shards.</span>` : `Unlocked up to Torment ${roman(max)} here.`}</div></div>`;
+      const step = (dv: number): void => { this.selTorment = U.clamp(this.selTorment + dv, 0, max); d.lastTorment = this.selTorment; Save.save(); audio.play('ui'); renderTorment(); renderSide(); };
+      $('tDown').onclick = () => step(-1); $('tUp').onclick = () => step(1);
     };
     const renderOmens = (): void => {
       if (!omensUnlocked) return;
@@ -365,13 +389,18 @@ class UiController {
     const renderSide = (): void => {
       const c = CHAR_BY_ID[this.selChar]!, st = STAGE_BY_ID[this.selStage]!;
       let heat = 0; for (const id in d.omens) heat += d.omens[id] || 0;
-      $('setupSide').innerHTML = `<div class="row"><img src="${S.portraitURL(c, 96)}" alt="" style="width:72px;height:72px;border-radius:8px"><div><h3 style="margin:0;color:var(--gold)">${c.name}</h3><div class="muted">${c.title}</div></div></div>
-        <div style="margin:12px 0"><b>${st.name}</b><div class="tip">${st.desc}</div></div>
-        <div class="heat">HEAT ${heat}</div><div class="tip">Rewards ×${heatBonus(heat).toFixed(2)} · Stage ×${st.reward}</div>
+      const known = Object.keys(d.arts).filter((id) => ART_BY_ID[id] && d.arts[id]! >= 1);
+      const art = d.art ? ART_BY_ID[d.art] : undefined;
+      $('setupSide').innerHTML = `<div class="row"><img src="${S.portraitURL(c, 96)}" alt="" style="width:72px;height:72px;border-radius:8px"><div><h3 style="margin:0;color:var(--gold)">${c.name}${Save.charData(c.id).ascension ? ` <span class="asc-pip">${roman(Save.charData(c.id).ascension)}</span>` : ''}</h3><div class="muted">${c.title}</div></div></div>
+        <div style="margin:12px 0"><b>${st.name}</b>${this.selTorment ? ` <span class="tag torment-tag">Torment ${roman(this.selTorment)}</span>` : ''}<div class="tip">${st.desc}</div></div>
+        <div class="heat">HEAT ${heat}</div><div class="tip">Rewards ×${(heatBonus(heat) * tormentReward(this.selTorment)).toFixed(2)} · Stage ×${st.reward}</div>
+        ${known.length ? `<div style="margin-top:12px"><label class="tip" for="artSel">Soul Art (R)</label><select id="artSel" style="width:100%"><option value="">— none —</option>${known.map((id) => `<option value="${id}" ${d.art === id ? 'selected' : ''}>${ART_BY_ID[id]!.name} · Lv ${d.arts[id]}</option>`).join('')}</select>${art ? `<div class="tip" style="margin-top:4px">${esc(art.desc)}</div>` : ''}</div>` : ''}
         <button class="btn primary" id="beginBtn" style="width:100%;margin-top:16px;font-size:20px">Begin the Night</button>`;
-      $('beginBtn').onclick = () => { audio.play('buy'); d.lastStage = this.selStage; Save.save(); this.startRun(); };
+      $('beginBtn').onclick = () => { audio.play('buy'); d.lastStage = this.selStage; d.lastTorment = this.selTorment; Save.save(); this.startRun(); };
+      const sel = document.getElementById('artSel') as HTMLSelectElement | null;
+      if (sel) sel.onchange = () => { Save.equipArt(sel.value); audio.play('ui'); renderSide(); };
     };
-    renderStages(); renderOmens(); renderSide();
+    renderStages(); renderTorment(); renderOmens(); renderSide();
   }
   startRun(): void {
     const d = Save.data;
@@ -380,7 +409,8 @@ class UiController {
     $('hud').classList.remove('hidden');
     audio.resume(); if (d.settings.music > 0) audio.startMusic();
     this.narrator.clear();
-    this.game.start({ charId: this.selChar, stageId: this.selStage, omens, meta: Save.computeMeta(this.selChar), tutorial: d.stats.runs < 3 });
+    const torment = Math.min(this.selTorment, Save.tormentMax(this.selStage));
+    this.game.start({ charId: this.selChar, stageId: this.selStage, omens, meta: Save.computeMeta(this.selChar), tutorial: d.stats.runs < 3, torment, art: Save.runArt() });
     this.input.flush();
     this.buildSlots();
   }
@@ -400,13 +430,15 @@ class UiController {
     const branches = c.talents.map((b) => {
       const pts = Save.branchPoints(c.id, b.id);
       return `<div class="branch"><h3 style="color:${b.color}">${b.name} <span class="muted" style="font-size:12px">${pts} pts</span></h3>${b.nodes.map((n) => {
-        const r = cd.talents[n.id] || 0, avail = Save.nodeAvailable(c.id, n), maxed = r >= n.max;
-        return `<div class="tier-lbl">${n.keystone ? 'Keystone · needs 16 pts' : 'Tier ' + (n.tier + 1) + (n.tier ? ' · needs ' + n.tier * 4 + ' pts' : '')}</div><div class="node ${avail ? '' : 'locked'} ${maxed ? 'maxed' : ''} ${n.keystone ? 'keystone' : ''}" data-id="${n.id}" ${BTN}><div class="grow"><div class="nm">${n.name}</div><div class="ds">${n.desc}</div></div><div class="rank">${r}/${n.max}</div></div>`;
+        const r = cd.talents[n.id] || 0, avail = Save.nodeAvailable(c.id, n), maxed = r >= n.max, req = Save.nodeReq(n);
+        const asc = n.asc && cd.ascension < n.asc ? ` · <span class="bad">Ascension ${ASCENSIONS[n.asc - 1]!.numeral}</span>` : n.asc ? ` · Ascension ${ASCENSIONS[n.asc - 1]!.numeral}` : '';
+        const lbl = n.apex ? 'Apex · needs ' + req + ' pts' + asc : n.keystone ? 'Keystone · needs ' + req + ' pts' : n.tier === 5 ? 'Mastery · needs ' + req + ' pts' + asc : 'Tier ' + (n.tier + 1) + (req ? ' · needs ' + req + ' pts' : '');
+        return `<div class="tier-lbl">${lbl}</div><div class="node ${avail ? '' : 'locked'} ${maxed ? 'maxed' : ''} ${n.keystone ? 'keystone' : ''} ${n.apex ? 'apex' : n.tier === 5 ? 'mastery' : ''}" data-id="${n.id}" ${BTN}><div class="grow"><div class="nm">${n.name}</div><div class="ds">${n.desc}</div></div><div class="rank">${r}/${n.max}</div></div>`;
       }).join('')}</div>`;
     }).join('');
     const paragon = `<div class="panel" style="padding:14px;margin-top:16px"><h3 style="margin:0 0 4px;color:#c084fc">Paragon <span class="muted" style="font-size:13px;font-weight:400">— endless ranks, spend points here at any time</span></h3><div class="paragon">${PARAGON.map((p) => `<div class="node" data-p="${p.id}" ${BTN}>${ic(p.icon, 'sm')}<div class="grow"><div class="nm">${p.name}</div><div class="ds">${statFmt(p.stat, p.per)} per rank</div></div><div class="rank">${cd.paragon[p.id] || 0}</div></div>`).join('')}</div></div>`;
     const tree = $('tTree');
-    tree.innerHTML = `<div class="row" style="margin-bottom:10px"><h3 style="margin:0;color:var(--gold)">${c.name}</h3><span class="muted">Level ${cd.level}</span><span class="tag" style="background:${free > 0 ? 'var(--gold)' : '#333'};color:${free > 0 ? '#000' : '#999'}">${free} points available</span><span class="tip grow">Each character level grants 1 point. Tiers unlock with points spent in that branch.</span></div><div class="branches">${branches}</div>${paragon}`;
+    tree.innerHTML = `<div class="row" style="margin-bottom:10px"><h3 style="margin:0;color:var(--gold)">${c.name}${cd.ascension ? ` <span class="asc-pip">${roman(cd.ascension)}</span>` : ''}</h3><span class="muted">Level ${cd.level}</span><span class="tag" style="background:${free > 0 ? 'var(--gold)' : '#333'};color:${free > 0 ? '#000' : '#999'}">${free} points available</span><span class="tip grow">Each character level grants 1 point. Tiers unlock with points spent in that branch.</span></div><div class="branches">${branches}</div>${paragon}`;
     $$(tree, '.node[data-id]').forEach((el) => el.onclick = () => { const node = c.talents.flatMap((b) => b.nodes).find((n) => n.id === el.dataset.id)!; const err = Save.buyTalent(c.id, node); if (err) this.toast(err); else audio.play('buy'); this.renderTalents(); const li = document.querySelector('#tCharList .ci.sel .tip'); if (li) li.textContent = `Lv ${cd.level} · ${Save.talentPointsFree(c.id)} pts`; });
     $$(tree, '.node[data-p]').forEach((el) => el.onclick = () => { const err = Save.buyParagon(c.id, el.dataset.p!); if (err) this.toast(err); else audio.play('buy'); this.renderTalents(); });
   }
@@ -430,7 +462,7 @@ class UiController {
   refreshCurrency(): void { $$(document, '.currency').forEach((el) => el.outerHTML = this.currencyBar()); }
   forge_anvil(): void {
     const d = Save.data, total = Save.anvilTotal();
-    const tiers: [number, string][] = [[1, 'Foundation'], [2, 'Refinement'], [3, 'Mastercraft'], [4, 'Mastery — endless']];
+    const tiers: [number, string][] = [[1, 'Foundation'], [2, 'Refinement'], [3, 'Mastercraft'], [4, 'Mastery — endless'], [5, 'Celestial']];
     const body = $('forgeBody');
     body.innerHTML = tiers.map(([t, name]) => { const req = ANVIL_TIER_REQ[t] || 0, locked = total < req; return `<h3 class="gold" style="margin:14px 0 8px">${name} <span class="muted" style="font-size:13px;font-weight:400">${locked ? `— unlocks at ${req} total ranks (you have ${total})` : ''}</span></h3><div class="anvil-grid">${ANVIL.filter((a) => a.tier === t).map((a) => { const r = d.anvil[a.id] || 0, cost = anvilCost(a, r), maxed = r >= a.max; return `<div class="upg ${locked ? 'locked' : ''}">${ic(a.icon)}<div class="grow"><div class="nm">${a.name} <span class="muted">${a.max >= 999 ? r : r + '/' + a.max}</span></div><div class="ds">${statName(a.stat)} ${statFmt(a.stat, a.per)} per rank · total ${statFmt(a.stat, a.per * r)}</div>${a.max < 999 ? `<div class="pips">${Array.from({ length: a.max }, (_, i) => `<i class="${i < r ? 'on' : ''}"></i>`).join('')}</div>` : ''}</div><button class="btn small ${maxed ? '' : 'primary'}" data-id="${a.id}" ${maxed || locked || d.gold < cost ? 'disabled' : ''}>${maxed ? 'MAX' : U.fmt(cost)}</button></div>`; }).join('')}</div>`; }).join('');
     $$(body, 'button[data-id]').forEach((b) => b.onclick = () => { const err = Save.buyAnvil(ANVIL_BY_ID[b.dataset.id!]!); if (err) this.toast(err); else audio.play('forge'); this.refreshCurrency(); this.forge_anvil(); });
@@ -444,7 +476,8 @@ class UiController {
           <label class="tip" for="craftSlot">Slot</label><select id="craftSlot" style="width:100%">${SLOTS.map((s) => `<option value="${s.id}" ${s.id === this.craftSlot ? 'selected' : ''}>${s.name}</option>`).join('')}</select>
           <label class="tip" for="craftCat" style="margin-top:6px;display:block">Catalyst</label><select id="craftCat" style="width:100%">${cats.map((c) => `<option value="${c.id}" ${c.id === this.craftCat ? 'selected' : ''}>${c.name}${c.desc ? ' — ' + c.desc : ''}</option>`).join('')}</select>
           <div class="tip" style="margin:8px 0" id="craftCost"></div><button class="btn primary" id="craftBtn" style="width:100%">Craft</button>
-          <div class="tip" style="margin-top:8px">Rarity odds improve with Forge level. Epic from L4, Legendary from L6, Mythic from L10. Legendary+ items carry a unique power.</div></div></div>
+          <div class="tip" style="margin-top:8px">Rarity odds improve with Forge level. Epic from L4, Legendary from L6, Mythic from L10. Legendary+ items carry a unique power. From L7, Rare+ items may be <b>set pieces</b>.</div></div>
+        <div id="setBonus"></div></div>
       <div><h3 class="gold" style="margin:0 0 8px">Inventory <span class="muted" style="font-size:13px;font-weight:400">${d.items.length}/60</span></h3><div class="inv" id="inv"></div></div>
       <div class="panel" style="padding:12px;position:sticky;top:10px" id="itemDetail"><div class="muted">Select an item.</div></div></div>`;
     const renderCost = (): void => { const cat = CATALYSTS.find((c) => c.id === this.craftCat) || CATALYSTS[0]!; const cc = cat.cost as Record<string, number>; $('craftCost').innerHTML = `Cost: <b class="gold">${cost.gold} gold</b>, ${cost.iron} Iron` + Object.keys(cc).map((m) => `, ${cc[m]} ${MAT_BY_ID[m]!.name}`).join(''); };
@@ -453,8 +486,13 @@ class UiController {
     $('craftBtn').onclick = () => { const r = Save.craft(this.craftSlot, this.craftCat); if (r.err !== undefined) { this.toast(r.err); return; } audio.play('forge'); this.selItem = r.item.uid; this.refreshCurrency(); this.forge_armory(); const rar = RARITY_BY_ID[r.item.rarity]!; if (rar.index >= 3) { this.notice(`Forged: ${r.item.name} (${rar.name})`, rar.color, 3); audio.play('evolve'); } else this.toast(`Forged: ${r.item.name} (${rar.name})`); };
     renderCost();
     // NOTE: item fields come from the save, which can be imported from an arbitrary string — escape them.
-    const renderSlots = (): void => { $('eqSlots').innerHTML = SLOTS.map((s) => { const it = d.items.find((x) => x.uid === d.equipped[s.id]); return `<div class="slot ${it && it.uid === this.selItem ? 'sel' : ''}" data-uid="${it ? esc(it.uid) : ''}" ${it ? BTN : ''}>${ic(s.icon, 'sm')}<div><div class="tip">${s.name}</div>${it ? `<div class="r-${esc(it.rarity)}"><b>${esc(it.name)}</b> +${esc(it.level)}</div>` : '<div class="muted">— empty —</div>'}</div></div>`; }).join(''); $$($('eqSlots'), '.slot').forEach((el) => el.onclick = () => { if (el.dataset.uid) { this.selItem = el.dataset.uid; renderInv(); renderSlots(); renderDetail(); } }); };
-    const renderInv = (): void => { const items = d.items.slice().sort((a, b) => RARITY_BY_ID[b.rarity]!.index - RARITY_BY_ID[a.rarity]!.index || b.level - a.level); $('inv').innerHTML = items.map((it) => { const eq = d.equipped[it.slot] === it.uid; return `<div class="item r-${esc(it.rarity)} ${it.uid === this.selItem ? 'sel' : ''}" data-uid="${esc(it.uid)}" ${BTN}><div class="row">${ic(SLOT_BY_ID[it.slot]!.icon, 'sm')}<div><div class="nm">${esc(it.name)}</div><div class="rar">${RARITY_BY_ID[it.rarity]!.name} +${esc(it.level)}</div></div></div>${eq ? '<div class="eq">EQUIPPED</div>' : ''}</div>`; }).join('') || '<div class="muted">No items yet. Craft one!</div>'; $$($('inv'), '.item').forEach((el) => el.onclick = () => { this.selItem = el.dataset.uid!; audio.play('ui'); renderInv(); renderSlots(); renderDetail(); }); };
+    const renderSets = (): void => {
+      const worn = SLOTS.map((s) => d.items.find((x) => x.uid === d.equipped[s.id])).filter((x): x is NonNullable<typeof x> => !!x), counts = setCounts(worn);
+      const ids = Object.keys(counts);
+      $('setBonus').innerHTML = ids.length ? `<h3 class="gold" style="margin:10px 0 6px">Sets</h3>` + ids.map((id) => { const s = SET_BY_ID[id]!, n = counts[id]!; return `<div class="panel" style="padding:8px;margin-bottom:6px"><b style="color:${s.color}">${s.name}</b> <span class="tip">${n}/6</span>${s.bonuses.map((b) => `<div class="tip" style="${n >= b.n ? 'color:' + s.color : ''}">${n >= b.n ? '✓' : '·'} ${b.n}: ${b.desc}</div>`).join('')}</div>`; }).join('') : '';
+    };
+    const renderSlots = (): void => { renderSets(); $('eqSlots').innerHTML = SLOTS.map((s) => { const it = d.items.find((x) => x.uid === d.equipped[s.id]); return `<div class="slot ${it && it.uid === this.selItem ? 'sel' : ''}" data-uid="${it ? esc(it.uid) : ''}" ${it ? BTN : ''}>${ic(s.icon, 'sm')}<div><div class="tip">${s.name}</div>${it ? `<div class="r-${esc(it.rarity)}"><b>${esc(it.name)}</b> +${esc(it.level)}</div>` : '<div class="muted">— empty —</div>'}</div></div>`; }).join(''); $$($('eqSlots'), '.slot').forEach((el) => el.onclick = () => { if (el.dataset.uid) { this.selItem = el.dataset.uid; renderInv(); renderSlots(); renderDetail(); } }); };
+    const renderInv = (): void => { const items = d.items.slice().sort((a, b) => RARITY_BY_ID[b.rarity]!.index - RARITY_BY_ID[a.rarity]!.index || b.level - a.level); $('inv').innerHTML = items.map((it) => { const eq = d.equipped[it.slot] === it.uid; const set = it.set ? SET_BY_ID[it.set] : undefined; return `<div class="item r-${esc(it.rarity)} ${it.uid === this.selItem ? 'sel' : ''}" data-uid="${esc(it.uid)}" ${BTN}><div class="row">${ic(SLOT_BY_ID[it.slot]!.icon, 'sm')}<div><div class="nm">${esc(it.name)}</div><div class="rar">${RARITY_BY_ID[it.rarity]!.name} +${esc(it.level)}${set ? ` · <span style="color:${set.color}">◆ set</span>` : ''}</div></div></div>${eq ? '<div class="eq">EQUIPPED</div>' : ''}</div>`; }).join('') || '<div class="muted">No items yet. Craft one!</div>'; $$($('inv'), '.item').forEach((el) => el.onclick = () => { this.selItem = el.dataset.uid!; audio.play('ui'); renderInv(); renderSlots(); renderDetail(); }); };
     const renderDetail = (): void => {
       const it = d.items.find((x) => x.uid === this.selItem); const box = $('itemDetail');
       if (!it) { box.innerHTML = '<div class="muted">Select an item.</div>'; return; }
@@ -462,7 +500,8 @@ class UiController {
       const upMats = up.mats as Record<string, number>;
       box.innerHTML = `<h3 class="r-${esc(it.rarity)}" style="margin:0">${esc(it.name)}</h3><div class="tip">${r.name} ${SLOT_BY_ID[it.slot]!.name} · +${esc(it.level)}/${r.maxUp} · item level ${esc(it.ilvl)}</div>
         <div style="margin:10px 0">${it.affixes.map((a, i) => `<div class="affix"><span>${esc(statName(a.stat))}</span><span><b class="good">${esc(statFmt(a.stat, itemAffixValue(it, a)))}</b> ${perks.reforge ? `<button class="btn small ghost" data-rf="${i}" title="Reforge this affix (${reforgeCost().gold}g, 4 Dust, 1 Crystal)" aria-label="Reforge affix">⟳</button>` : ''}</span></div>`).join('')}
-        ${u ? `<div class="affix" style="border-color:rgba(251,146,60,0.4)"><span class="r-legendary">★ ${u.name}</span></div><div class="tip" style="color:#fdba74">${u.desc}</div>` : ''}</div>
+        ${u ? `<div class="affix" style="border-color:rgba(251,146,60,0.4)"><span class="r-legendary">★ ${u.name}</span></div><div class="tip" style="color:#fdba74">${u.desc}</div>` : ''}
+        ${it.set && SET_BY_ID[it.set] ? (() => { const s = SET_BY_ID[it.set]!; return `<div class="affix" style="border-color:${s.color}66"><span style="color:${s.color}">◆ ${s.name}</span></div>${s.bonuses.map((b) => `<div class="tip">${b.n}: ${b.desc}</div>`).join('')}`; })() : ''}</div>
         <div class="col"><button class="btn ${eq ? '' : 'primary'}" id="eqBtn">${eq ? 'Unequip' : 'Equip'}</button>
         <button class="btn" id="upBtn" ${maxed ? 'disabled' : ''}>${maxed ? 'Max upgrade' : `Upgrade (+8% affixes) — ${up.gold}g` + Object.keys(upMats).map((m) => `, ${upMats[m]} ${MAT_BY_ID[m]!.name}`).join('')}</button>
         <button class="btn danger" id="salvBtn">Salvage → ${Object.keys(sv).filter((k) => sv[k]).map((k) => sv[k] + ' ' + (k === 'gold' ? 'gold' : MAT_BY_ID[k]!.name)).join(', ')}</button></div>`;
@@ -522,12 +561,12 @@ class UiController {
     const d = Save.data;
     const reactions = Object.values(REACTION_DEFS).map((r) => `<div class="entry ${d.codex.reactions[r.id] ? '' : 'locked'}"><h4 style="color:${r.color}">${r.name}</h4><div class="tip">${r.recipe}</div><div class="lore">${r.desc}</div></div>`).join('');
     const reso = RESONANCES.map((r) => `<div class="entry"><div class="row">${ic(r.icon, 'sm')}<h4 style="color:${r.color};margin:0">${r.name} <span class="muted" style="font-size:12px">· ${r.tag} weapons</span></h4></div>${r.tiers.map((t) => `<div class="tip"><b>${t.n}:</b> ${t.desc}</div>`).join('')}</div>`).join('');
-    const boons = BOONS.map((b) => { const seen = d.codex.boons[b.id]; return `<div class="entry ${seen ? '' : 'locked'}"><div class="row">${ic(b.icon, 'sm')}<h4 style="margin:0">${seen ? b.name : '???'}</h4></div><div class="lore">${seen ? b.desc : 'Offered when a Herald falls.'}</div></div>`; }).join('');
+    const boons = BOONS.map((b) => { const seen = d.codex.boons[b.id]; return `<div class="entry ${seen ? '' : 'locked'}"><div class="row">${ic(b.icon, 'sm')}<h4 style="margin:0">${seen ? b.name : '???'}</h4>${b.rarity ? `<span class="tag rar-${b.rarity}">${b.rarity}</span>` : ''}</div><div class="lore">${seen ? b.desc : b.rarity === 'legendary' ? 'Offered by tiered Heralds, after the Eclipse, or in Torment III+.' : 'Offered when a Herald falls.'}</div></div>`; }).join('');
     const affixes = ELITE_AFFIXES.map((a) => `<div class="entry"><h4 style="color:${a.color}">${a.name}</h4><div class="lore">${a.desc}</div><div class="tip">From ${a.minute}:00</div></div>`).join('');
     const shrines = Object.values(SHRINE_DEFS).map((s) => `<div class="entry"><div class="row">${ic(s.icon, 'sm')}<h4 style="color:${s.color};margin:0">${s.name}</h4></div><div class="lore">${s.desc}</div></div>`).join('');
     $('codexBody').innerHTML = `<h3 class="gold">Elemental reactions</h3><p class="tip">Two elements on one enemy react. Lightning weapons Shock, ice Chills, fire Burns.</p><div class="codex-grid">${reactions}</div>
       <h3 class="gold">Resonance</h3><p class="tip">Carry weapons that share a tag to awaken resonance bonuses.</p><div class="codex-grid">${reso}</div>
-      <h3 class="gold">Boons</h3><p class="tip">Each fallen Herald offers a choice of three run-long boons.</p><div class="codex-grid">${boons}</div>
+      <h3 class="gold">Boons</h3><p class="tip">Each fallen Herald offers a choice of three run-long boons. Cursed boons trade a real cost for power; legendary ones only appear from tiered Heralds, after the Eclipse, or in Torment III and deeper.</p><div class="codex-grid">${boons}</div>
       <h3 class="gold">Shrines</h3><p class="tip">Stand inside a shrine to channel it.</p><div class="codex-grid">${shrines}</div>
       <h3 class="gold">Elite affixes</h3><div class="codex-grid">${affixes}</div>`;
   }
@@ -552,12 +591,13 @@ class UiController {
   codex_armory(): void {
     const d = Save.data; this.claims = {};
     const ws = Object.values(WEAPONS);
-    $('codexBody').innerHTML = `<p class="tip">Discover, master (max level) and evolve each weapon. Mastered weapons deal +5% damage, evolved +10% more — permanently.</p><div class="codex-grid">${ws.map((w) => { const e = d.codex.weapons[w.id] || {}; const seen = !!e.found; return `<div class="entry ${seen ? '' : 'locked'}"><div class="row">${ic(w.icon)}<div><h4>${seen ? w.name : '???'}</h4><div class="tip">${w.char ? 'Signature: ' + CHAR_BY_ID[w.char]!.name : 'General weapon'}${e.dmg ? ' · best ' + U.fmt(e.dmg) + ' dmg' : ''}</div></div></div><div class="lore">${seen ? w.desc : 'Undiscovered.'}</div>${seen && w.evo ? `<div class="tip">Evolves with ${PASSIVE_BY_ID[w.evo.with]!.name} → <b>${w.evo.name}</b>: ${w.evo.desc}</div>` : ''}<div class="col" style="gap:4px;margin-top:6px">${ARMORY_STAGES.map((st) => { const key = 'ar_' + w.id + '_' + st.id; this.claims[key] = [key, st.reward]; return `<div class="row" style="font-size:13px"><span class="grow">${st.name}</span>${this.claimBtn(key, st.reward, !!e[st.id])}</div>`; }).join('')}</div></div>`; }).join('')}</div>`;
+    $('codexBody').innerHTML = `<p class="tip">Discover, master (max level) and evolve each weapon. Mastered weapons deal +5% damage, evolved +10% more — permanently. Weapon Mastery levels (Ascension › Weapon Mastery) add more.</p><div class="codex-grid">${ws.map((w) => { const e = d.codex.weapons[w.id] || {}; const seen = !!e.found; return `<div class="entry ${seen ? '' : 'locked'}"><div class="row">${ic(w.icon)}<div><h4>${seen ? w.name : '???'}</h4><div class="tip">${w.char ? 'Signature: ' + CHAR_BY_ID[w.char]!.name : 'General weapon'}${e.dmg ? ' · best ' + U.fmt(e.dmg) + ' dmg' : ''}</div></div></div><div class="lore">${seen ? w.desc : 'Undiscovered.'}</div>${seen && w.evo ? `<div class="tip">Evolves with ${PASSIVE_BY_ID[w.evo.with]!.name} → <b>${w.evo.name}</b>: ${w.evo.desc}</div>` : ''}<div class="col" style="gap:4px;margin-top:6px">${ARMORY_STAGES.map((st) => { const key = 'ar_' + w.id + '_' + st.id; this.claims[key] = [key, st.reward]; return `<div class="row" style="font-size:13px"><span class="grow">${st.name}</span>${this.claimBtn(key, st.reward, !!e[st.id])}</div>`; }).join('')}</div></div>`; }).join('')}</div>`;
     this.bindClaims(() => this.codex_armory());
   }
   codex_relics(): void {
     const d = Save.data;
-    $('codexBody').innerHTML = `<p class="tip">Unique powers found on Legendary and Mythic gear crafted at the Forge.</p><div class="codex-grid">${UNIQUES.map((u) => { const seen = !!d.codex.uniques[u.id]; return `<div class="entry ${seen ? '' : 'locked'}"><h4>${seen ? u.name : '???'}</h4><div class="lore">${seen ? u.desc : 'Not yet forged.'}</div></div>`; }).join('')}</div>`;
+    $('codexBody').innerHTML = `<p class="tip">Unique powers found on Legendary and Mythic gear crafted at the Forge.</p><div class="codex-grid">${UNIQUES.map((u) => { const seen = !!d.codex.uniques[u.id]; return `<div class="entry ${seen ? '' : 'locked'}"><h4>${seen ? u.name : '???'}</h4><div class="lore">${seen ? u.desc : 'Not yet forged.'}</div></div>`; }).join('')}</div>
+      <h3 class="gold">Gear sets</h3><p class="tip">From Forge level 7, Rare-or-better items may be forged as set pieces (the Eclipse Catalyst guarantees one). Wear several pieces of one set to awaken its bonuses.</p><div class="codex-grid">${SETS.map((s) => `<div class="entry"><div class="row">${ic(s.icon, 'sm')}<h4 style="color:${s.color};margin:0">${s.name}</h4></div>${s.bonuses.map((b) => `<div class="tip"><b>${b.n} pieces:</b> ${b.desc}</div>`).join('')}</div>`).join('')}</div>`;
   }
   codex_milestones(): void {
     const d = Save.data; this.claims = {};
@@ -608,17 +648,19 @@ class UiController {
       <div id="boons"></div>
       <div class="bottom-left"><div id="buff" class="hidden"></div><div id="reso"></div><div id="hpbar"><i></i><s></s><b id="hpTxt"></b></div><div id="resbar" class="hidden"><i></i></div><div id="reslabel"></div><div id="slots"></div></div>
       <div id="mapslot"></div>
-      <div id="active"><div class="abw"><button type="button" class="ab dash" id="dashBtn" aria-label="Dash"><img id="dashImg" alt=""><span class="cd" id="dashCd"></span></button><div class="lbl">Dash</div></div><div class="abw"><button type="button" class="ab" id="abBtn" aria-label="Use ability"><img id="abImg" alt=""><span class="cd" id="abCd"></span><span class="charges hidden" id="abCh"></span></button><div class="lbl" id="abLbl"></div></div></div>
-      <div class="bottom-right" id="hudHint"><span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</div>`;
+      <div id="active"><div class="abw"><button type="button" class="ab dash" id="dashBtn" aria-label="Dash"><img id="dashImg" alt=""><span class="cd" id="dashCd"></span><span class="charges hidden" id="dashCh"></span></button><div class="lbl">Dash</div></div><div class="abw"><button type="button" class="ab" id="abBtn" aria-label="Use ability"><img id="abImg" alt=""><span class="cd" id="abCd"></span><span class="charges hidden" id="abCh"></span></button><div class="lbl" id="abLbl"></div></div><div class="abw hidden" id="artW"><button type="button" class="ab art" id="artBtn" aria-label="Use Soul Art"><img id="artImg" alt=""><span class="cd" id="artCd"></span></button><div class="lbl" id="artLbl"></div></div></div>
+      <div class="bottom-right" id="hudHint"><span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">R</span> soul art · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</div>`;
     const slot = (el: Element | null): HudSlot => new HudSlot(el as HTMLElement);
-    this.hudEls = { xp: slot($('xpbar').firstElementChild), xpTxt: slot($('xpTxt')), kills: slot($('killsTxt')), gold: slot($('goldTxt')), timer: slot($('timer')), heat: $('heatTxt'), stage: $('stageTxt'), bossbar: slot($('bossbar')), bossNm: slot($('bossNm')), bossHp: slot($('bossHp')), hp: slot($('hpbar').firstElementChild), hpS: slot($('hpbar').querySelector('s')), hpTxt: slot($('hpTxt')), resbar: slot($('resbar')), res: slot($('resbar').firstElementChild), reslabel: slot($('reslabel')), slots: $('slots'), abImg: $<HTMLImageElement>('abImg'), abCd: slot($('abCd')), abBtn: slot($('abBtn')), abCh: slot($('abCh')), abLbl: $('abLbl'), dashBtn: slot($('dashBtn')), dashCd: slot($('dashCd')), dashImg: $<HTMLImageElement>('dashImg'), combo: slot($('combo')), comboN: slot($('comboN')), comboName: slot($('comboName')), comboBar: slot($('comboBar')), boons: $('boons'), reso: $('reso'), buff: slot($('buff')), bossEp: slot($('bossEp')) };
+    this.hudEls = { xp: slot($('xpbar').firstElementChild), xpTxt: slot($('xpTxt')), kills: slot($('killsTxt')), gold: slot($('goldTxt')), timer: slot($('timer')), heat: $('heatTxt'), stage: $('stageTxt'), bossbar: slot($('bossbar')), bossNm: slot($('bossNm')), bossHp: slot($('bossHp')), hp: slot($('hpbar').firstElementChild), hpS: slot($('hpbar').querySelector('s')), hpTxt: slot($('hpTxt')), resbar: slot($('resbar')), res: slot($('resbar').firstElementChild), reslabel: slot($('reslabel')), slots: $('slots'), abImg: $<HTMLImageElement>('abImg'), abCd: slot($('abCd')), abBtn: slot($('abBtn')), abCh: slot($('abCh')), abLbl: $('abLbl'), dashBtn: slot($('dashBtn')), dashCd: slot($('dashCd')), dashImg: $<HTMLImageElement>('dashImg'), dashCh: slot($('dashCh')), artW: slot($('artW')), artBtn: slot($('artBtn')), artCd: slot($('artCd')), artImg: $<HTMLImageElement>('artImg'), artLbl: $('artLbl'), combo: slot($('combo')), comboN: slot($('comboN')), comboName: slot($('comboName')), comboBar: slot($('comboBar')), boons: $('boons'), reso: $('reso'), buff: slot($('buff')), bossEp: slot($('bossEp')) };
     // the HUD markup starts with these states
-    this.hudEls.bossbar.toggle('hidden', true); this.hudEls.resbar.toggle('hidden', true); this.hudEls.abCh.toggle('hidden', true); this.hudEls.combo.toggle('hidden', true); this.hudEls.buff.toggle('hidden', true);
+    this.hudEls.bossbar.toggle('hidden', true); this.hudEls.resbar.toggle('hidden', true); this.hudEls.abCh.toggle('hidden', true); this.hudEls.combo.toggle('hidden', true); this.hudEls.buff.toggle('hidden', true); this.hudEls.artW.toggle('hidden', true); this.hudEls.dashCh.toggle('hidden', true);
     const ab = $('abBtn');
     // blur so a later SPACE keyup can't "click" the focused button and fire the ability twice
     ab.onclick = () => { this.input.pressActive(); ab.blur(); };
     const db = $('dashBtn');
     db.onclick = () => { this.input.pressDash(); db.blur(); };
+    const artB = $('artBtn');
+    artB.onclick = () => { this.input.pressArt(); artB.blur(); };
     this.map = new MapView($('mapslot'), document.body);
     this.meter = new DamageMeter($('hud').querySelector<HTMLElement>('.bottom-left')!, Save.data.settings.dmgMeter, (open) => { Save.data.settings.dmgMeter = open; Save.save(); });
     // touch players have no Esc/P key
@@ -629,7 +671,9 @@ class UiController {
     const g = this.game, p = g.player, E = this.hudEls!;
     E.abImg.src = S.iconURL(p.char.active.icon); E.abLbl.textContent = p.char.active.name; E.abBtn.el.setAttribute('aria-label', 'Use ability: ' + p.char.active.name);
     E.dashImg.src = S.iconURL({ g: 'boot', c: p.char.colors.accent });
-    E.heat.innerHTML = g.heat ? `<span style="color:#fb923c">HEAT ${g.heat}</span>` : ''; E.stage.innerHTML = `<span class="muted" style="font-size:14px">${g.stage.name}</span>`;
+    if (g.art) { E.artW.toggle('hidden', false); E.artImg.src = S.iconURL(g.art.icon); E.artLbl.textContent = g.art.name; E.artBtn.el.setAttribute('aria-label', 'Use Soul Art: ' + g.art.name); }
+    else E.artW.toggle('hidden', true);
+    E.heat.innerHTML = (g.heat ? `<span style="color:#fb923c">HEAT ${g.heat}</span>` : '') + (g.torment ? ` <span style="color:#f43f5e">TORMENT ${roman(g.torment)}</span>` : ''); E.stage.innerHTML = `<span class="muted" style="font-size:14px">${g.stage.name}</span>`;
     const res = p.char.resource;
     if (res) { E.resbar.toggle('hidden', false); E.res.el.style.background = res.color; E.res.el.style.boxShadow = '0 0 8px ' + res.color; this.resName = res.name; }
     else { E.resbar.toggle('hidden', true); this.resName = ''; }
@@ -662,12 +706,15 @@ class UiController {
       E.bossbar.toggle('enraged', b.phase === 2);
     } else E.bossbar.toggle('hidden', true);
     // active
-    E.abBtn.toggle('ready', p.activeCharges > 0);
-    const cd = p.char.active.cd * p.stats.activeCd;
-    E.abCd.setScaleY(p.activeCharges >= p.activeMax ? 0 : Math.max(0, p.activeCdT / cd));
+    E.abBtn.toggle('ready', p.activeCharges > 0 && !p.f.b_silence);
+    E.abBtn.toggle('sealed', !!p.f.b_silence);
+    const cd = g.activeCooldown();
+    E.abCd.setScaleY(p.f.b_silence ? 1 : p.activeCharges >= p.activeMax ? 0 : Math.max(0, p.activeCdT / cd));
     if (p.activeMax > 1) { E.abCh.toggle('hidden', false); E.abCh.setNum(p.activeCharges, String); } else E.abCh.toggle('hidden', true);
-    E.dashBtn.toggle('ready', p.dashCdT <= 0);
-    E.dashCd.setScaleY(Math.max(0, p.dashCdT / DASH.cd));
+    E.dashBtn.toggle('ready', p.dashCharges > 0);
+    E.dashCd.setScaleY(p.dashCharges >= p.dashMax ? 0 : Math.max(0, p.dashCdT / g.dashCooldown()));
+    if (p.dashMax > 1) { E.dashCh.toggle('hidden', false); E.dashCh.setNum(p.dashCharges, String); } else E.dashCh.toggle('hidden', true);
+    if (g.art) { E.artBtn.toggle('ready', g.artCdT <= 0); E.artCd.setScaleY(Math.max(0, g.artCdT / g.artCooldown())); }
     this.map?.update(g);
     this.meter?.update(g);
     // kill streak
@@ -686,14 +733,15 @@ class UiController {
     if (buff !== this.hudBuff) { this.hudBuff = buff; E.buff.toggle('hidden', !buff); E.buff.setText(buff); E.buff.toggle('trial', !!g.trial); }
     // slots: compare the flattened build state without allocating; rebuild markup only on change
     let i = 0;
-    for (const w of p.weapons) { i = this.slotPut(i, w.id); i = this.slotPut(i, w.level); i = this.slotPut(i, w.evolved); }
+    for (const w of p.weapons) { i = this.slotPut(i, w.id); i = this.slotPut(i, w.level); i = this.slotPut(i, w.evolved); i = this.slotPut(i, !!w.apex); }
+    i = this.slotPut(i, p.abilityRank || 0);
     i = this.slotPut(i, '|');
     for (const x of p.passives) { i = this.slotPut(i, x.id); i = this.slotPut(i, x.level); }
     if (this.slotState.length !== i) { this.slotState.length = i; this.slotDirty = true; }
     if (this.slotDirty) {
       this.slotDirty = false;
       E.reso.innerHTML = g.resonance.filter((r) => r.count >= 1).map((r) => { const next = r.def.tiers[r.tier]; return `<div class="chip ${r.tier ? 'on' : ''}" style="--c:${r.def.color}" title="${r.def.name}: ${r.def.tiers.map((t) => t.n + ' — ' + t.desc).join(' · ')}"><img src="${S.iconURL(r.def.icon)}" alt=""><b>${r.def.name}</b> ${r.count}${next ? '/' + next.n : ' ★'}</div>`; }).join('');
-      E.slots.innerHTML = p.weapons.map((w) => { const evo = w.evolved ? w.def.evo : undefined; return `<div class="s ${evo ? 'evo' : w.level >= w.def.max ? 'max' : ''}" title="${evo ? evo.name : w.def.name} Lv${w.level}"><img src="${S.iconURL(evo ? evo.icon : w.def.icon)}" alt=""><b>${evo ? '★' : w.level}</b></div>`; }).join('') + '<div class="sep"></div>' + p.passives.map((x) => `<div class="s ${x.level >= x.def.max ? 'max' : ''}" title="${x.def.name} Lv${x.level}"><img src="${S.iconURL(x.def.icon)}" alt=""><b>${x.level}</b></div>`).join('');
+      E.slots.innerHTML = p.weapons.map((w) => { const evo = w.evolved ? w.def.evo : undefined, od = evo ? Math.max(0, w.level - w.def.max) : 0; return `<div class="s ${w.apex ? 'apex' : evo ? 'evo' : w.level >= w.def.max ? 'max' : ''}" title="${w.apex ? 'Exalted ' : ''}${evo ? evo.name : w.def.name} Lv${w.level}${od ? ' · Overdrive ' + OVERDRIVE_NAMES[od - 1] : ''}"><img src="${S.iconURL(evo ? evo.icon : w.def.icon)}" alt=""><b>${w.apex ? '✦' : evo ? '★' + (od ? od : '') : w.level}</b></div>`; }).join('') + '<div class="sep"></div>' + p.passives.map((x) => `<div class="s ${x.level > x.def.max ? 'over' : x.level >= x.def.max ? 'max' : ''}" title="${x.def.name} Lv${x.level}${x.level > x.def.max ? ' (Overflow)' : ''}"><img src="${S.iconURL(x.def.icon)}" alt=""><b>${x.level}</b></div>`).join('') + (p.abilityRank ? `<div class="sep"></div><div class="s rank" title="${p.char.active.name} · Ability Rank ${roman(p.abilityRank)}"><img src="${S.iconURL(p.char.active.icon)}" alt=""><b>${roman(p.abilityRank)}</b></div>` : '');
     }
   }
 
@@ -704,23 +752,36 @@ class UiController {
     const card = (o: LevelOption, i: number): string => {
       if (o.type === 'gold') return `<div class="card" data-i="${i}" ${BTN}><div class="head">${ic({ g: 'coin', c: '#f5c542' })}<div class="nm">Gold Pouch</div></div><div class="desc">+${o.value} gold. Everything is maxed — the Forge awaits.</div></div>`;
       if (o.type === 'heal') return `<div class="card" data-i="${i}" ${BTN}><div class="head">${ic({ g: 'heart', c: '#ff5c7a' })}<div class="nm">Second Wind</div></div><div class="desc">Heal 30% of your max health.</div></div>`;
-      let kind: string, name: string, icon: IconSpec, next: string, evoHint: string, curLevel: number;
+      if (o.type === 'ability') {
+        const a = p.char.active, r = p.abilityRank || 0;
+        return `<div class="card deal ability-card ${this.banishMode ? 'banish-mode' : ''}" data-i="${i}" style="--i:${i}" ${BTN}><div class="hot">${i + 1}</div><div class="head">${ic(a.icon)}<div><div class="kind">Ability Rank</div><div class="nm">${a.name}</div></div></div>
+          <div class="row" style="gap:6px"><div class="pips">${Array.from({ length: ABILITY_RANK_MAX }, (_, k) => `<i class="${k < r ? 'on' : k < o.level ? 'next' : ''}"></i>`).join('')}</div><span class="tip">Rank ${roman(o.level)}</span></div>
+          <div class="next">▲ Ability power +${Math.round(ABILITY_RANK_POWER * 100)}%, cooldown -${Math.round(ABILITY_RANK_CD * 100)}%</div></div>`;
+      }
+      let kind: string, name: string, icon: IconSpec, next: string, evoHint: string, curLevel: number, max: number, extra = '';
       if (o.type === 'weapon') {
         const d = o.def, cur = p.weapons.find((w) => w.id === o.id), evolved = !!(cur && cur.evolved && d.evo);
         kind = d.char ? 'Signature weapon' : 'Weapon';
-        name = evolved ? d.evo!.name : d.name; icon = evolved ? d.evo!.icon : d.icon; curLevel = cur ? cur.level : 0;
+        name = (cur && cur.apex ? 'Exalted ' : '') + (evolved ? d.evo!.name : d.name); icon = evolved ? d.evo!.icon : d.icon; curLevel = cur ? cur.level : 0; max = d.max;
         next = o.isNew ? d.desc : (o.empowered ? WH.describe(d.levels[o.level - 3] || {}) + ' & ' : '') + WH.describe(d.levels[o.level - 2] || {});
-        evoHint = d.evo ? `<div class="tip">Evolves with ${PASSIVE_BY_ID[d.evo.with]!.name}${p.passives.some((x) => x.id === d.evo!.with) ? ' ✓' : ''}</div>` : '';
+        if (cur && o.level > d.max) {
+          // Overdrive: levels past the max of an evolved weapon
+          const od = o.level - d.max, cap = g.weaponCap(cur) - d.max, odNow = Math.max(0, cur.level - d.max);
+          kind = 'Overdrive'; next = (o.empowered ? overdriveDesc(od - 1) + ' & ' : '') + overdriveDesc(od); max = cap; curLevel = odNow;
+          extra = `<span class="tag od">Overdrive ${OVERDRIVE_NAMES[od - 1]}</span>`;
+        }
+        evoHint = d.evo && !evolved ? `<div class="tip">Evolves with ${PASSIVE_BY_ID[d.evo.with]!.name}${p.passives.some((x) => x.id === d.evo!.with) ? ' ✓' : ''}</div>` : '';
         if (o.isNew) evoHint += (d.tags || []).map((tag) => { const r = RESONANCE_BY_TAG[tag]; if (!r) return ''; const have = p.weapons.filter((w) => (w.def.tags || []).includes(tag)).length, t0 = resonanceTier(r, have), t1 = resonanceTier(r, have + 1); return t1 > t0 ? `<div class="reso-hint" style="--c:${r.color}">${r.name} awakens: ${r.tiers[t1 - 1]!.desc}</div>` : `<div class="tip" style="color:${r.color}">${r.name} ${have + 1}/${(r.tiers[t0] ?? r.tiers[r.tiers.length - 1]!).n}</div>`; }).join('');
       } else {
         const d = o.def, cur = p.passives.find((x) => x.id === o.id);
-        kind = 'Passive'; name = d.name; icon = d.icon; curLevel = cur ? cur.level : 0; next = d.desc;
+        kind = 'Passive'; name = d.name; icon = d.icon; curLevel = cur ? cur.level : 0; next = d.desc; max = d.max;
+        if (cur && o.level > d.max) { kind = 'Overflow'; max = g.passiveCap(cur); next = d.desc + ` (Overflow levels are worth ${Math.round(OVERFLOW_VALUE * 100)}%.)`; extra = '<span class="tag od">Overflow</span>'; }
         const ws = p.weapons.filter((w) => w.def.evo && w.def.evo.with === o.id && !w.evolved);
         evoHint = ws.length ? `<div class="tip" style="color:#c084fc">Evolves ${ws.map((w) => w.def.name).join(', ')}</div>` : '';
       }
-      const max = o.def.max;
-      return `<div class="card deal ${o.empowered ? 'emp' : ''} ${this.banishMode ? 'banish-mode' : ''}" data-i="${i}" style="--i:${i}" ${BTN}><div class="hot">${i + 1}</div><div class="head">${ic(icon)}<div><div class="kind">${kind}</div><div class="nm">${name}</div></div></div>
-          <div class="row" style="gap:6px">${o.isNew ? '<span class="tag new">New</span>' : `<div class="pips">${Array.from({ length: max }, (_, k) => `<i class="${k < curLevel ? 'on' : k < o.level ? 'next' : ''}"></i>`).join('')}</div><span class="tip">Lv ${o.level}</span>`}${o.empowered ? '<span class="tag emp">Empowered +2</span>' : ''}</div>
+      const lvlTxt = kind === 'Overdrive' ? 'OD ' + OVERDRIVE_NAMES[o.level - o.def.max - 1] : 'Lv ' + o.level, nextPip = kind === 'Overdrive' ? o.level - o.def.max : o.level;
+      return `<div class="card deal ${o.empowered ? 'emp' : ''} ${kind === 'Overdrive' || kind === 'Overflow' ? 'overdrive' : ''} ${this.banishMode ? 'banish-mode' : ''}" data-i="${i}" style="--i:${i}" ${BTN}><div class="hot">${i + 1}</div><div class="head">${ic(icon)}<div><div class="kind">${kind}</div><div class="nm">${name}</div></div></div>
+          <div class="row" style="gap:6px">${o.isNew ? '<span class="tag new">New</span>' : `<div class="pips">${Array.from({ length: max }, (_, k) => `<i class="${k < curLevel ? 'on' : k < nextPip ? 'next' : ''}"></i>`).join('')}</div><span class="tip">${lvlTxt}</span>`}${extra}${o.empowered ? '<span class="tag emp">Empowered +2</span>' : ''}</div>
           <div class="desc">${o.isNew ? o.def.desc : ''}</div><div class="next">${o.isNew ? '' : '▲ ' + next}</div>${evoHint}</div>`;
     };
     const pick = (o: LevelOption): void => { this.setLvlKeys(null); this.closeModal(); g.pickOption(o); this.resumePlay(); };
@@ -746,11 +807,13 @@ class UiController {
     const html = rewards.map((r, i) => {
       const st = `style="--i:${i}"`;
       if (r.type === 'evolve') return `<div class="reward evo reveal" ${st}>${ic(r.icon, 'lg')}<div><span class="tag evo">Evolution</span><div class="cinzel" style="font-size:20px;color:#e9d5ff;margin:4px 0">${r.name}</div><div class="tip" style="color:#d8d0e8">${r.desc}</div></div></div>`;
+      if (r.type === 'apotheosis') return `<div class="reward evo apex reveal" ${st}>${ic(r.icon, 'lg')}<div><span class="tag apex">Apotheosis</span><div class="cinzel" style="font-size:20px;color:#fde68a;margin:4px 0">${r.name}</div><div class="tip" style="color:#fef3c7">${r.desc}</div></div></div>`;
       if (r.type === 'gold') return `<div class="reward reveal" ${st}>${ic({ g: 'coin', c: '#f5c542' })}<div><b class="gold">+${r.value} gold</b></div></div>`;
       if (r.type === 'mat') { const m = MAT_BY_ID[r.mat]!; return `<div class="reward reveal" ${st}>${ic(m.icon)}<div><b style="color:${m.color}">+1 ${m.name}</b></div></div>`; }
-      return `<div class="reward reveal" ${st}>${ic(r.def.icon)}<div><b>${r.def.name}</b><div class="tip">Level ${r.level}${r.level >= r.def.max ? ' · MAX' : ''}</div></div></div>`;
+      const over = r.level > r.def.max ? (r.type === 'weapon' ? ' · Overdrive ' + OVERDRIVE_NAMES[r.level - r.def.max - 1] : ' · Overflow') : r.level === r.def.max ? ' · MAX' : '';
+      return `<div class="reward reveal" ${st}>${ic(r.def.icon)}<div><b>${r.def.name}</b><div class="tip">Level ${r.level}${over}</div></div></div>`;
     }).join('');
-    this.modal(`<div class="chest-art ${boss ? 'boss' : ''}">${ic({ g: 'chest', c: boss ? '#ff44aa' : '#ffd700' }, 'lg')}</div><h2>${boss ? 'Boss Trove' : 'Treasure Chest'}</h2><div class="sub">${rewards.some((r) => r.type === 'evolve') ? 'A weapon has transcended its form.' : boss ? 'Five treasures.' : 'The night rewards the brave.'}</div><div class="rewards">${html}</div><div class="lvl-actions"><button class="btn primary" id="chestOk">Continue</button></div>`);
+    this.modal(`<div class="chest-art ${boss ? 'boss' : ''}">${ic({ g: 'chest', c: boss ? '#ff44aa' : '#ffd700' }, 'lg')}</div><h2>${boss ? 'Boss Trove' : 'Treasure Chest'}</h2><div class="sub">${rewards.some((r) => r.type === 'apotheosis') ? 'An evolved weapon ascends beyond its form.' : rewards.some((r) => r.type === 'evolve') ? 'A weapon has transcended its form.' : boss ? 'Five treasures.' : 'The night rewards the brave.'}</div><div class="rewards">${html}</div><div class="lvl-actions"><button class="btn primary" id="chestOk">Continue</button></div>`);
     let done = false;
     // on `window` (registered after InputManager) so the flush in resumePlay() runs after it queued SPACE
     const kh = (e: KeyboardEvent): void => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); ok(); } };
@@ -762,7 +825,7 @@ class UiController {
   /* ============ BOONS ============ */
   showBoon(options: BoonDef[]): void {
     const g = this.game;
-    const card = (b: BoonDef, i: number): string => `<div class="card boon-card deal" data-i="${i}" style="--i:${i}" ${BTN}><div class="hot">${i + 1}</div><div class="boon-icon">${ic(b.icon, 'lg')}</div><div class="nm">${b.name}</div><div class="desc">${b.desc}</div></div>`;
+    const card = (b: BoonDef, i: number): string => `<div class="card boon-card deal ${b.rarity ? 'rar-' + b.rarity : ''}" data-i="${i}" style="--i:${i}" ${BTN}><div class="hot">${i + 1}</div><div class="boon-icon">${ic(b.icon, 'lg')}</div>${b.rarity ? `<span class="tag rar-${b.rarity}">${b.rarity}</span>` : ''}<div class="nm">${b.name}</div><div class="desc">${b.desc}</div></div>`;
     this.modal(`<h2 class="boon-title">A Herald's Gift</h2><div class="sub">The fallen Herald's power is yours to bind. Choose one boon for the rest of this night · press 1-3</div><div class="cards">${options.map(card).join('')}</div>`, 'boon-modal');
     let done = false;
     const pick = (b: BoonDef): void => { if (done) return; done = true; this.setLvlKeys(null); this.closeModal(); g.pickBoon(b); this.notice('Boon: ' + b.name, '#e9d5ff', 2.5); this.resumePlay(); };
@@ -776,8 +839,8 @@ class UiController {
     g.state = 'paused';
     const st = p.stats;
     const rows: [string, string | number][] = [['maxHp', st.maxHp], ['regen', st.regen.toFixed(2) + '/s'], ['armor', st.armor.toFixed(1)], ['speed', Math.round(st.speed)], ['might', U.pct(st.might)], ['area', U.pct(st.area)], ['projSpeed', U.pct(st.projSpeed)], ['duration', U.pct(st.duration)], ['amount', '+' + st.amount], ['cooldown', U.pct(st.cooldown)], ['crit', U.pct(st.crit)], ['critDmg', U.pct(st.critDmg)], ['dodge', U.pct(st.dodge)], ['lifesteal', U.pct(st.lifesteal, 1)], ['luck', U.pct(st.luck)], ['growth', U.pct(st.growth)], ['greed', U.pct(st.greed)], ['magnet', Math.round(st.magnet)], ['curse', U.pct(st.curse)], ['revival', p.revivals]];
-    this.modal(`<h2>Paused</h2><div class="sub">${p.char.name} · ${g.stage.name} · ${U.fmtTime(g.time)} · Heat ${g.heat}</div><div class="pause-grid"><div><h3 class="gold" style="margin:0 0 6px">Stats</h3><div class="stat-grid">${rows.map(([k, v]) => `<div><span class="muted">${statName(k)}</span><b>${v}</b></div>`).join('')}</div></div>
-      <div><h3 class="gold" style="margin:0 0 6px">Arsenal</h3><div class="pause-items">${p.weapons.map((w) => { const evo = w.evolved ? w.def.evo : undefined; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : w.def.icon)}" alt=""><span>${evo ? evo.name : w.def.name} <b>Lv${w.level}</b><br><span class="tip">${U.fmt(w.dmgDealt)} dmg</span></span></div>`; }).join('')}</div><h3 class="gold" style="margin:10px 0 6px">Passives</h3><div class="pause-items">${p.passives.map((x) => `<div class="it"><img src="${S.iconURL(x.def.icon)}" alt=""><span>${x.def.name} <b>Lv${x.level}</b></span></div>`).join('') || '<span class="muted">None yet</span>'}</div>
+    this.modal(`<h2>Paused</h2><div class="sub">${p.char.name} · ${g.stage.name}${g.torment ? ' · Torment ' + roman(g.torment) : ''} · ${U.fmtTime(g.time)} · Heat ${g.heat}${p.abilityRank ? ' · Ability Rank ' + roman(p.abilityRank) : ''}${g.art ? ' · ' + g.art.name : ''}</div><div class="pause-grid"><div><h3 class="gold" style="margin:0 0 6px">Stats</h3><div class="stat-grid">${rows.map(([k, v]) => `<div><span class="muted">${statName(k)}</span><b>${v}</b></div>`).join('')}</div></div>
+      <div><h3 class="gold" style="margin:0 0 6px">Arsenal</h3><div class="pause-items">${p.weapons.map((w) => { const evo = w.evolved ? w.def.evo : undefined, od = evo ? w.level - w.def.max : 0; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : w.def.icon)}" alt=""><span>${w.apex ? 'Exalted ' : ''}${evo ? evo.name : w.def.name} <b>${od > 0 ? 'OD ' + OVERDRIVE_NAMES[od - 1] : 'Lv' + w.level}</b><br><span class="tip">${U.fmt(w.dmgDealt)} dmg</span></span></div>`; }).join('')}</div><h3 class="gold" style="margin:10px 0 6px">Passives</h3><div class="pause-items">${p.passives.map((x) => `<div class="it"><img src="${S.iconURL(x.def.icon)}" alt=""><span>${x.def.name} <b>Lv${x.level}</b></span></div>`).join('') || '<span class="muted">None yet</span>'}</div>
       ${(p.boons as string[]).length ? `<h3 class="gold" style="margin:10px 0 6px">Boons</h3><div class="pause-items">${(p.boons as string[]).map((id) => { const b = BOON_BY_ID[id]!; return `<div class="it" title="${b.desc}"><img src="${S.iconURL(b.icon)}" alt=""><span>${b.name}</span></div>`; }).join('')}</div>` : ''}
       ${g.resonance.some((r) => r.tier) ? `<h3 class="gold" style="margin:10px 0 6px">Resonance</h3>${g.resonance.filter((r) => r.tier).map((r) => `<div class="tip"><b style="color:${r.def.color}">${r.def.name} ${r.count}</b> — ${r.def.tiers.slice(0, r.tier).map((t) => t.desc).join(' ')}</div>`).join('')}` : ''}
       <h3 class="gold" style="margin:10px 0 6px">${p.char.trait.name}</h3><div class="tip">${p.char.trait.desc}</div></div></div>
@@ -796,18 +859,26 @@ class UiController {
     const epitaph = abandoned ? '' : this.narrator.epitaph;
     const cd = Save.charData(sum.charId), c = CHAR_BY_ID[sum.charId]!;
     const mats = (Object.keys(sum.mats) as (keyof typeof sum.mats)[]).filter((k) => sum.mats[k]).map((k) => `<span style="color:${MAT_BY_ID[k]!.color}">+${sum.mats[k]} ${MAT_BY_ID[k]!.name}</span>`).join(' · ');
-    this.modal(`<h2>${abandoned ? 'Run Abandoned' : sum.eclipse ? 'Consumed by the Eclipse' : 'You Have Fallen'}</h2><div class="sub">${c.name} survived ${U.fmtTime(sum.time)} in ${STAGE_BY_ID[sum.stageId]!.name}${sum.heat ? ' at Heat ' + sum.heat : ''}</div>
+    const ms = Object.keys(res.masteryUps).filter((id) => WEAPONS[id]).map((id) => `<span class="tag mastery-up">${esc(WEAPONS[id]!.name)} → ${Save.masteryLevel(id)}</span>`).join(' ');
+    const prog = `<div class="rewards">
+        <div class="reward">${ic({ g: 'star', c: '#fde68a' })}<div><b style="color:#fde68a">+${U.fmt(res.soulXp)} Soul XP</b><div class="tip">Soul Rank ${Save.soulRank()}${res.soulUps ? ` (+${res.soulUps} — ${res.soulUps} new Starweb point${res.soulUps === 1 ? '' : 's'}!)` : ''}</div></div></div>
+        ${ms ? `<div class="reward">${ic({ g: 'sword', c: '#fca5a5' })}<div><b>Weapon Mastery</b><div class="row" style="flex-wrap:wrap;gap:4px;margin-top:4px">${ms}</div></div></div>` : ''}
+        ${res.contractsDone.length ? `<div class="reward">${ic({ g: 'book', c: '#fde68a' })}<div><b class="gold">Contract${res.contractsDone.length === 1 ? '' : 's'} fulfilled</b><div class="tip">${res.contractsDone.length} ready to claim in Ascension › Night Contracts (${res.contractsDone.map((k) => fmtReward(k.reward)).join(' · ')})</div></div></div>` : ''}
+      </div>`;
+    this.modal(`<h2>${abandoned ? 'Run Abandoned' : sum.eclipse ? 'Consumed by the Eclipse' : 'You Have Fallen'}</h2><div class="sub">${c.name} survived ${U.fmtTime(sum.time)} in ${STAGE_BY_ID[sum.stageId]!.name}${sum.torment ? ' at Torment ' + roman(sum.torment) : ''}${sum.heat ? ' at Heat ' + sum.heat : ''}</div>
       ${epitaph ? `<blockquote class="epitaph">${esc(epitaph)}<cite>— The Keeper</cite></blockquote>` : ''}
       ${!abandoned && sum.killedBy ? `<div class="tip" style="text-align:center;margin:-4px 0 10px">Slain by <b class="bad">${esc(sum.killedBy)}</b></div>` : ''}
-      <div class="summary"><div class="st"><b>${U.fmtTime(sum.time)}</b><span>Survived</span>${rec(sum.time > prevBest && sum.time > 30) || rec(sum.time > prevStage && sum.time > 30)}</div><div class="st"><b>${sum.level}</b><span>Level</span></div><div class="st"><b>${U.fmt(sum.kills)}</b><span>Kills</span></div><div class="st"><b>${sum.bossKills}</b><span>Bosses</span></div><div class="st"><b>${sum.evolves}</b><span>Evolutions</span></div><div class="st"><b>${U.fmt(sum.bestCombo)}</b><span>Best streak</span>${rec(sum.bestCombo > prevCombo && sum.bestCombo >= 25)}</div><div class="st"><b>${U.fmt(sum.reactions)}</b><span>Reactions</span></div></div>
+      <div class="summary"><div class="st"><b>${U.fmtTime(sum.time)}</b><span>Survived</span>${rec(sum.time > prevBest && sum.time > 30) || rec(sum.time > prevStage && sum.time > 30)}</div><div class="st"><b>${sum.level}</b><span>Level</span></div><div class="st"><b>${U.fmt(sum.kills)}</b><span>Kills</span></div><div class="st"><b>${sum.bossKills}</b><span>Bosses</span></div><div class="st"><b>${sum.evolves}${sum.apotheoses ? ' +' + sum.apotheoses + '✦' : ''}</b><span>Evolutions</span></div><div class="st"><b>${U.fmt(sum.bestCombo)}</b><span>Best streak</span>${rec(sum.bestCombo > prevCombo && sum.bestCombo >= 25)}</div><div class="st"><b>${U.fmt(sum.reactions)}</b><span>Reactions</span></div></div>
       ${sum.boons.length ? `<div class="row" style="justify-content:center;gap:6px;margin-bottom:10px">${sum.boons.map((id) => { const b = BOON_BY_ID[id]; return b ? `<span class="tag" style="background:#2e1f47;color:#e9d5ff">${ic(b.icon, 'sm')} ${b.name}</span>` : ''; }).join('')}</div>` : ''}
       <div class="rewards"><div class="reward">${ic({ g: 'coin', c: '#f5c542' })}<div><b class="gold">+${U.fmt(sum.gold)} gold</b></div></div><div class="reward">${ic({ g: 'ember', c: '#ff8a3c' })}<div><b style="color:#ff8a3c">+${sum.embers} Soul Embers</b></div></div><div class="reward">${ic({ g: 'book', c: '#c4b5fd' })}<div><b style="color:#c4b5fd">+${U.fmt(sum.charXp)} character XP</b><div class="tip">${c.name} is now level ${cd.level}${res.levelUps ? ` (+${res.levelUps} — new talent points!)` : ''}</div></div></div>${mats ? `<div class="reward">${ic({ g: 'shard', c: '#fde68a' })}<div>${mats}</div></div>` : ''}</div>
-      ${res.unlocks.length ? `<div class="unlock-list">${res.unlocks.map((u) => `<div>✦ ${u.text}</div>`).join('')}</div>` : ''}
-      <div class="pause-grid report-grid"><div><h3 class="gold" style="margin:0 0 6px">Damage report</h3>${damageReport(sum, c)}</div><div><h3 class="gold" style="margin:0 0 6px">Final build</h3><div class="pause-items">${sum.weapons.map((w) => { const d = WEAPONS[w.id]!, evo = w.evolved ? d.evo : undefined; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : d.icon)}" alt=""><span>${evo ? evo.name : d.name} <b>Lv${w.level}</b></span></div>`; }).join('')}${sum.passives.map((x) => { const d = PASSIVE_BY_ID[x.id]!; return `<div class="it"><img src="${S.iconURL(d.icon)}" alt=""><span>${d.name} <b>Lv${x.level}</b></span></div>`; }).join('')}</div></div></div>
-      <div class="lvl-actions"><button class="btn" id="goMenu">Main Menu</button><button class="btn" id="goTalents">Talents</button><button class="btn" id="goForge">Forge</button><button class="btn primary" id="goAgain">Play Again</button></div>`);
+      ${prog}
+      ${res.unlocks.length ? `<div class="unlock-list">${res.unlocks.map((u) => `<div>✦ ${esc(u.text)}</div>`).join('')}</div>` : ''}
+      <div class="pause-grid report-grid"><div><h3 class="gold" style="margin:0 0 6px">Damage report</h3>${damageReport(sum, c)}</div><div><h3 class="gold" style="margin:0 0 6px">Final build</h3><div class="pause-items">${sum.weapons.map((w) => { const d = WEAPONS[w.id]!, evo = w.evolved ? d.evo : undefined; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : d.icon)}" alt=""><span>${w.apex ? 'Exalted ' : ''}${evo ? evo.name : d.name} <b>${w.level > d.max ? 'OD ' + OVERDRIVE_NAMES[w.level - d.max - 1] : 'Lv' + w.level}</b></span></div>`; }).join('')}${sum.passives.map((x) => { const d = PASSIVE_BY_ID[x.id]!; return `<div class="it"><img src="${S.iconURL(d.icon)}" alt=""><span>${d.name} <b>Lv${x.level}</b></span></div>`; }).join('')}</div></div></div>
+      <div class="lvl-actions"><button class="btn" id="goMenu">Main Menu</button><button class="btn" id="goTalents">Talents</button><button class="btn" id="goAscend">Ascension</button><button class="btn" id="goForge">Forge</button><button class="btn primary" id="goAgain">Play Again</button></div>`);
     $('goMenu').onclick = () => this.showTitle();
     $('goTalents').onclick = () => { this.game.state = 'idle'; $('hud').classList.add('hidden'); this.closeModal(); this.showTalents(sum.charId); };
     $('goForge').onclick = () => { this.game.state = 'idle'; $('hud').classList.add('hidden'); this.closeModal(); this.showForge(); };
+    $('goAscend').onclick = () => { this.game.state = 'idle'; $('hud').classList.add('hidden'); this.closeModal(); this.selChar = sum.charId; this.showAscension(res.contractsDone.length ? 'contracts' : Save.starPointsFree() > 0 ? 'starweb' : 'mastery'); };
     $('goAgain').onclick = () => { this.closeModal(); this.startRun(); };
   }
 }

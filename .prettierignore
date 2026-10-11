@@ -12,5 +12,6 @@ src/data
 src/game/game.ts
 src/meta/save.ts
 src/ui/ui.ts
+src/ui/progression.ts
 src/render/sprites.ts
 src/audio/audio.ts

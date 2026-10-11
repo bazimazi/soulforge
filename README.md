@@ -16,6 +16,7 @@ npm run dev        # http://localhost:5173
 | Key                                | Action                                       |
 | ---------------------------------- | -------------------------------------------- |
 | WASD / Arrows / left-stick         | Move                                         |
+| R / F / gamepad Y                  | Soul Art (if one is equipped)                |
 | Space / Shift / gamepad A, LB, LT  | Dash (every character; short i-frames, 1.5s) |
 | E / Q / gamepad X, RB, RT          | Character active ability                     |
 | M / gamepad Back / tap the minimap | Toggle the full map                          |
@@ -86,6 +87,18 @@ Nine of them are unlocked through milestones (survive X minutes, kill totals, bo
   - _Sigils_: 22 run modifiers bought with Soul Embers (extra level-up choice, +1 weapon slot, timed free levels…).
 - **Stages** — 5 biomes with their own palettes, props and difficulty/reward multipliers, unlocked by surviving long enough in the previous one.
 - **Omens** — 9 optional difficulty pacts (Heat). Each Heat point is +8% gold, XP and materials.
+- **Ascension** (title menu) — the long-term layer; see [docs/DESIGN.md › Fourth round](docs/DESIGN.md).
+  - _Soul Rank_: an account level fed by every run; each rank is a Starweb point.
+  - _Starweb_: an 84-star constellation talent graph shared by all champions, with notables and six
+    rule-changing keystones; stars light only next to lit ones.
+  - _Champion Ascension_: ten ranks per champion (level + feat + shards) that open talent tiers V (Mastery)
+    and VI (Apex) and end in Transcendence.
+  - _Weapon Mastery_: 25 levels per weapon from the damage it deals; Mastery 10 unlocks **Apotheosis**.
+  - _Soul Arts_: eight equippable second abilities (**R** / gamepad Y), upgradable to level 5.
+  - _Night Contracts_: three daily bounties and a weekly Grand Contract.
+- **Torment I–XX** — per-stage endgame tiers with scaling rewards and Eclipse Shards.
+- **In a run** — Overdrive levels for evolved weapons, Apotheosis (second evolution), Ability Rank cards,
+  passive Overflow, Cursed and Legendary boons, gear sets and a Celestial anvil tier.
 
 ## Development
 
