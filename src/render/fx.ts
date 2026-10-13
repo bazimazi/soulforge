@@ -13,9 +13,9 @@ import { TAU, U } from '../core/util';
 import type { Enemy } from '../game/types';
 
 const MAX_PARTICLES = 6144;
-/** Bursts are skipped above this count so ambient/trail particles always have headroom. */
-const BURST_LIMIT = 4800;
-const AMBIENT_LIMIT = 4200;
+/** Decorative particle budgets; combat entities and attack warnings never use these limits. */
+const BURST_LIMIT = 1800;
+const AMBIENT_LIMIT = 1200;
 
 const rnd = Math.random;
 const rr = (a: number, b: number) => a + rnd() * (b - a);
@@ -379,7 +379,7 @@ export class FX {
     return this._intensity;
   }
   set intensity(v: number) {
-    this._intensity = Number.isFinite(v) ? U.clamp(v, 0.25, 1) : 1;
+    this._intensity = Number.isFinite(v) ? U.clamp(v, 0.1, 1) : 1;
   }
   /** Where souls fly to (the champion), set by the renderer each frame. */
   soulX = 0;
@@ -469,13 +469,14 @@ export class FX {
 
   burst(x: number, y: number, color: string, n: number, o: BurstOpts = {}): void {
     const P = this.parts;
-    if (P.count > BURST_LIMIT) return;
+    const limit = Math.round(BURST_LIMIT * (0.35 + 0.65 * this._intensity));
+    if (P.count >= limit) return;
     const speed = o.speed || 90,
       life = o.life || 0.5,
       size = o.size || 4,
       up = o.up ? 60 : 0;
     const flags = o.add !== false ? PF.GLOW : 0;
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < Math.ceil(n * 0.6 * this._intensity) && P.count < limit; i++) {
       const a = rnd() * TAU,
         sp = speed * (0.4 + rnd() * 0.8);
       P.spawn(
@@ -497,8 +498,9 @@ export class FX {
    */
   debris(x: number, y: number, color: string, n: number, speed = 140, size = 4, life = 1.4, dirX = 0, dirY = 0, h = 10): void {
     const P = this.parts;
-    if (P.count > BURST_LIMIT) return;
-    for (let k = 0; k < n; k++) {
+    const limit = Math.round(BURST_LIMIT * (0.35 + 0.65 * this._intensity));
+    if (P.count >= limit) return;
+    for (let k = 0; k < Math.ceil(n * 0.6 * this._intensity) && P.count < limit; k++) {
       const a = rnd() * TAU,
         sp = speed * (0.35 + rnd() * 0.75);
       const i = P.spawn(
@@ -521,8 +523,9 @@ export class FX {
   /** Fast streaks fanning out around `angle` (hit sparks, slashes). */
   sparks(x: number, y: number, angle: number, spread: number, color: string, n: number, speed = 380, life = 0.22, size = 2.2): void {
     const P = this.parts;
-    if (P.count > BURST_LIMIT) return;
-    for (let k = 0; k < n; k++) {
+    const limit = Math.round(BURST_LIMIT * (0.35 + 0.65 * this._intensity));
+    if (P.count >= limit) return;
+    for (let k = 0; k < Math.ceil(n * 0.6 * this._intensity) && P.count < limit; k++) {
       const a = angle + (rnd() - 0.5) * spread * 2,
         sp = speed * (0.5 + rnd() * 0.7);
       P.spawn(x, y, Math.cos(a) * sp, Math.sin(a) * sp, life * (0.6 + rnd() * 0.6), size, color, PF.GLOW | PF.STREAK);
@@ -531,8 +534,8 @@ export class FX {
   /** Souls rising from (x, y) and streaming into the champion. */
   souls(x: number, y: number, color: string, n: number, size = 4): void {
     const P = this.parts;
-    if (P.count > AMBIENT_LIMIT) return;
-    for (let k = 0; k < n; k++) {
+    if (P.count >= AMBIENT_LIMIT) return;
+    for (let k = 0; k < Math.ceil(n * 0.5 * this._intensity) && P.count < AMBIENT_LIMIT; k++) {
       const a = rnd() * TAU;
       P.spawn(
         x,
@@ -554,7 +557,7 @@ export class FX {
     if (crit) this.flashLight(x, y, 70, '#ffe9a8', 0.12);
   }
   trail(x: number, y: number, color: string, size?: number): void {
-    if (this.parts.count > BURST_LIMIT) return;
+    if (this.parts.count >= BURST_LIMIT * (0.35 + 0.65 * this._intensity)) return;
     this.parts.spawn(x, y, rr(-10, 10), rr(-10, 10), 0.25, Math.min(7, size || 4), color, PF.GLOW);
   }
   ambient(x: number, y: number, vx: number, vy: number, life: number, size: number, color: string): void {

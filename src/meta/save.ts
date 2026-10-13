@@ -5,7 +5,7 @@ import { BESTIARY_STAT, BESTIARY_TIERS, BOSS_STAT, BOSS_TIERS, MILESTONES, PARAG
 import { DAILY_BONUS, DAILY_REROLLS, applyRun, dayNumber, genDaily, genReplacement, genWeekly, weekNumber, type Contract, type ContractContext } from '../data/contracts';
 import { AFFIX, ANVIL, ANVIL_TIER_REQ, CATALYSTS, RARITY_BY_ID, SET_BY_ID, SIGILS, SLOT_BY_ID, UNIQUE_BY_ID, anvilCost, craftCost, craftItem, forgeLevelPerks, forgeXpFor, itemStats, metaRng, reforgeCost, salvageValue, setCounts, upgradeCost } from '../data/forge';
 import type { AnvilDef, Cost, Item, Reward, SigilDef, TransmuteRecipe } from '../data/forge';
-import { STAGES } from '../data/passives';
+import { OMENS, STAGES } from '../data/passives';
 import { ASCENSIONS, ASCENSION_PER_RANK, ASCENSION_STAR_POINTS, MASTERY_DMG_PER_LEVEL, MASTERY_MAX, MAX_ASCENSION, TORMENT_CLEAR, TORMENT_FIRST, TORMENT_MAX, masteryXpFor, masteryXpFromDamage, soulRankPoints, soulXpFor, type AscensionDef, type AscensionFeat } from '../data/progression';
 import { ART_BY_ID, ART_MAX_LEVEL, SOUL_ARTS, artUpgradeCost } from '../data/soularts';
 import { STARWEB_RESPEC_GOLD, STAR_BY_ID, starConnected, starReachable } from '../data/starweb';
@@ -247,12 +247,13 @@ export function deepMerge<T>(base: T, over: unknown): T {
   if (!isPlainObject(base)) {
     if (over === undefined) return base;
     if (base !== null && (typeof over !== typeof base || over === null || Array.isArray(over))) return base;
+    if (typeof base === 'number' && !Number.isFinite(over)) return base;
     return over as T;
   }
   const out: RawObject = { ...base };
   if (!isPlainObject(over)) return out as T;
   for (const k of Object.keys(over)) {
-    if (k === '__proto__') continue;
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     out[k] = k in base ? deepMerge(base[k], over[k]) : over[k];
   }
   return out as T;
@@ -335,13 +336,43 @@ function decodeBase64(b64: string): string {
 
 const MAT_KEYS = ['iron', 'dust', 'crystal', 'star', 'eclipse'] as const;
 
+const nonnegative = (v: unknown, fallback = 0): number => typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : fallback;
+function numericRecord(v: unknown): Record<string, number> {
+  if (!isPlainObject(v)) return {};
+  return Object.fromEntries(Object.entries(v).filter(([id, n]) => id !== '__proto__' && id !== 'constructor' && id !== 'prototype' && typeof n === 'number' && Number.isFinite(n) && n >= 0)) as Record<string, number>;
+}
+function booleanRecord(v: unknown): Record<string, boolean> {
+  if (!isPlainObject(v)) return {};
+  return Object.fromEntries(Object.entries(v).filter(([id, on]) => id !== '__proto__' && id !== 'constructor' && id !== 'prototype' && on === true)) as Record<string, boolean>;
+}
+
+/** Preserve usable gear while excluding malformed records that would break the Forge or a run. */
+function normalizeItems(v: unknown): Item[] {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set<string>(), out: Item[] = [];
+  for (const it of v) {
+    if (!isPlainObject(it) || typeof it.uid !== 'string' || !it.uid || seen.has(it.uid) || typeof it.slot !== 'string' || !Object.hasOwn(SLOT_BY_ID, it.slot) || typeof it.rarity !== 'string' || !Object.hasOwn(RARITY_BY_ID, it.rarity) || !Array.isArray(it.affixes)) continue;
+    seen.add(it.uid);
+    out.push({
+      uid: it.uid, slot: it.slot, rarity: it.rarity,
+      name: typeof it.name === 'string' ? it.name : SLOT_BY_ID[it.slot]!.name,
+      level: Math.min(RARITY_BY_ID[it.rarity]!.maxUp, Math.floor(nonnegative(it.level))),
+      ilvl: Math.max(1, Math.floor(nonnegative(it.ilvl, 1))), spent: nonnegative(it.spent),
+      affixes: it.affixes.filter((a): a is { stat: string; base: number } => isPlainObject(a) && typeof a.stat === 'string' && Object.hasOwn(AFFIX, a.stat) && typeof a.base === 'number' && Number.isFinite(a.base) && a.base >= 0),
+      ...(typeof it.unique === 'string' && Object.hasOwn(UNIQUE_BY_ID, it.unique) ? { unique: it.unique } : {}),
+      ...(typeof it.set === 'string' && Object.hasOwn(SET_BY_ID, it.set) ? { set: it.set } : {}),
+    });
+  }
+  return out;
+}
+
 function isTrack(v: unknown): v is XpTrack {
   return isPlainObject(v) && typeof v.xp === 'number' && Number.isFinite(v.xp) && typeof v.level === 'number' && Number.isFinite(v.level);
 }
 /** Roll surplus XP into levels (`need(L)` = XP from L to L + 1), up to `cap`. */
-function settle(t: XpTrack, need: (L: number) => number, cap: number): number {
+function settle(t: XpTrack, need: (L: number) => number, cap: number, minLevel = 1): number {
   let ups = 0;
-  t.level = Math.max(1, Math.floor(t.level)) || 1;
+  t.level = Math.max(minLevel, Math.floor(t.level));
   if (cap !== Infinity) t.level = Math.min(t.level, cap);
   t.xp = Math.max(0, t.xp);
   while (t.level < cap && t.xp >= need(t.level)) { t.xp -= need(t.level); t.level++; ups++; }
@@ -349,7 +380,10 @@ function settle(t: XpTrack, need: (L: number) => number, cap: number): number {
   return ups;
 }
 function isContract(v: unknown): v is Contract {
-  return isPlainObject(v) && typeof v.id === 'string' && typeof v.kind === 'string' && typeof v.target === 'number' && typeof v.progress === 'number' && isPlainObject(v.reward) && (v.ref === undefined || typeof v.ref === 'string');
+  return isPlainObject(v) && typeof v.id === 'string' && typeof v.kind === 'string' && ['kills', 'enemy', 'bosses', 'elites', 'reactions', 'shrines', 'evolves', 'gold', 'charTime', 'stageTime', 'combo', 'level', 'torment'].includes(v.kind)
+    && typeof v.target === 'number' && Number.isFinite(v.target) && v.target > 0 && typeof v.progress === 'number' && Number.isFinite(v.progress) && v.progress >= 0
+    && typeof v.claimed === 'boolean' && isPlainObject(v.reward) && Object.entries(v.reward).every(([k, n]) => ['gold', 'embers', ...MAT_KEYS].includes(k) && typeof n === 'number' && Number.isFinite(n) && n >= 0)
+    && (v.ref === undefined || typeof v.ref === 'string');
 }
 
 let store: KeyValueStore = new LocalStore();
@@ -385,23 +419,50 @@ const Save = {
       if (!d || (isPlainObject(parsed) && rawVersion(parsed) > SAVE_VERSION)) store.set(BACKUP_KEY, raw);
     }
     this.data = d ?? defaults();
+    const before = JSON.stringify(this.data);
     this.normalize();
+    if (raw != null && d && before !== JSON.stringify(this.data)) store.set(BACKUP_KEY, raw);
     return this.data;
   },
   /** Ensure every character has a record and the starters are unlocked; settle XP tracks; drop malformed entries. */
   normalize(): void {
     const d = this.data;
+    d.gold = nonnegative(d.gold); d.embers = nonnegative(d.embers);
+    for (const m of MAT_KEYS) d.mats[m] = nonnegative(d.mats[m]);
+    d.items = normalizeItems(d.items);
+    for (const slot in d.equipped) if (!d.items.some((it) => it.uid === d.equipped[slot] && it.slot === slot)) delete d.equipped[slot];
+    d.anvil = numericRecord(d.anvil); d.omens = numericRecord(d.omens);
+    for (const a of ANVIL) if (d.anvil[a.id] != null) d.anvil[a.id] = Math.min(a.max, Math.floor(d.anvil[a.id]!));
+    for (const o of OMENS) if (d.omens[o.id] != null) d.omens[o.id] = Math.min(o.max, Math.floor(d.omens[o.id]!));
+    d.sigils = booleanRecord(d.sigils);
+    d.stages.unlocked = ['ashen', ...new Set(d.stages.unlocked.filter((id) => id !== 'ashen' && STAGES.some((s) => s.id === id)))];
+    d.stages.best = numericRecord(d.stages.best); d.torment.best = numericRecord(d.torment.best);
+    d.lastTorment = Math.min(TORMENT_MAX, Math.floor(nonnegative(d.lastTorment)));
+    d.codex.enemies = numericRecord(d.codex.enemies); d.codex.bosses = numericRecord(d.codex.bosses);
+    for (const id in d.codex.weapons) {
+      const entry = d.codex.weapons[id];
+      if (!isPlainObject(entry)) { delete d.codex.weapons[id]; continue; }
+      d.codex.weapons[id] = { found: entry.found === true, maxed: entry.maxed === true, evolved: entry.evolved === true, dmg: nonnegative(entry.dmg) };
+    }
+    d.forge.level = Math.max(1, Math.floor(nonnegative(d.forge.level, 1))); d.forge.xp = nonnegative(d.forge.xp);
+    const s = d.settings;
+    s.sfx = Math.min(1, nonnegative(s.sfx)); s.music = Math.min(1, nonnegative(s.music)); s.shake = Math.min(1, nonnegative(s.shake));
+    s.quality = [0.6, 0.8, 1].includes(s.quality) ? s.quality : 1;
+    s.fxIntensity = Math.max(0.1, Math.min(1, nonnegative(s.fxIntensity, 1)));
     CHARACTERS.forEach((c) => this.charData(c.id));
     d.chars.kael!.unlocked = d.chars.lyra!.unlocked = d.chars.talon!.unlocked = true;
     if (!isTrack(d.soul)) d.soul = { xp: 0, level: 1 };
     settle(d.soul, soulXpFor, Infinity);
-    for (const id in d.masteries) { const m = d.masteries[id]; if (!isTrack(m) || !WEAPONS[id]) { delete d.masteries[id]; continue; } settle(m, masteryXpFor, MASTERY_MAX); }
-    for (const id in d.starweb) if (!STAR_BY_ID[id] || d.starweb[id] !== true) delete d.starweb[id];
-    for (const id in d.arts) if (!ART_BY_ID[id] || typeof d.arts[id] !== 'number') delete d.arts[id];
+    for (const id in d.masteries) { const m = d.masteries[id]; if (!isTrack(m) || !Object.hasOwn(WEAPONS, id)) { delete d.masteries[id]; continue; } settle(m, masteryXpFor, MASTERY_MAX, 0); }
+    for (const id in d.starweb) if (!Object.hasOwn(STAR_BY_ID, id) || id === 'origin' || d.starweb[id] !== true) delete d.starweb[id];
+    for (const id in d.arts) { if (!Object.hasOwn(ART_BY_ID, id) || !Number.isFinite(d.arts[id])) delete d.arts[id]; else d.arts[id] = Math.min(ART_MAX_LEVEL, Math.floor(nonnegative(d.arts[id]))); }
     if (d.art && !(d.arts[d.art]! >= 1)) d.art = '';
     const cs = d.contracts;
     cs.list = Array.isArray(cs.list) ? cs.list.filter(isContract) : [];
     if (cs.weekly != null && !isContract(cs.weekly)) cs.weekly = null;
+    if (cs.list.length !== 3) cs.day = -1;
+    if (!Object.hasOwn(CHAR_BY_ID, d.lastChar) || !this.charUnlocked(d.lastChar)) d.lastChar = 'kael';
+    if (!d.stages.unlocked.includes(d.lastStage)) d.lastStage = 'ashen';
   },
   /** Request a write. Rapid calls coalesce into one write ~{@link SAVE_DEBOUNCE_MS} later. */
   save(): void {
@@ -414,8 +475,7 @@ const Save = {
   flush(): boolean {
     cancelPending();
     if (!dirty) return true;
-    dirty = false;
-    try { return store.set(SAVE_KEY, JSON.stringify(this.data)); } catch { return false; }
+    try { const saved = store.set(SAVE_KEY, JSON.stringify(this.data)); dirty = !saved; return saved; } catch { return false; }
   },
   reset(): void {
     cancelPending();
@@ -435,7 +495,7 @@ const Save = {
     } catch {
       return false;
     }
-    if (!isPlainObject(parsed) || !isPlainObject(parsed.chars)) return false;
+    if (!isPlainObject(parsed) || !isPlainObject(parsed.chars) || rawVersion(parsed) > SAVE_VERSION) return false;
     const d = migrate(parsed);
     if (!d) return false;
     try { store.set(BACKUP_KEY, JSON.stringify(this.data)); } catch { /* ignore */ }
@@ -446,10 +506,10 @@ const Save = {
     return true;
   },
   charData(id: string): CharSave {
-    const c = this.data.chars[id] || (this.data.chars[id] = {} as CharSave);
-    if (c.unlocked == null) c.unlocked = false;
-    c.xp = c.xp || 0; c.level = c.level || 1; c.talents = c.talents || {}; c.paragon = c.paragon || {};
-    c.runs = c.runs || 0; c.kills = c.kills || 0; c.bosses = c.bosses || 0; c.bestTime = c.bestTime || 0; c.bestLevel = c.bestLevel || 0; c.chapters = c.chapters || {};
+    const c = isPlainObject(this.data.chars[id]) ? this.data.chars[id]! : (this.data.chars[id] = {} as CharSave);
+    c.unlocked = c.unlocked === true;
+    c.xp = nonnegative(c.xp); c.level = Math.max(1, Math.floor(nonnegative(c.level, 1))); c.talents = numericRecord(c.talents); c.paragon = numericRecord(c.paragon);
+    c.runs = nonnegative(c.runs); c.kills = nonnegative(c.kills); c.bosses = nonnegative(c.bosses); c.bestTime = nonnegative(c.bestTime); c.bestLevel = nonnegative(c.bestLevel); c.chapters = booleanRecord(c.chapters);
     c.ascension = Math.min(MAX_ASCENSION, Math.max(0, Math.floor(Number(c.ascension) || 0))); c.bestTorment = c.bestTorment || 0;
     return c;
   },
@@ -722,7 +782,9 @@ const Save = {
   },
   craft(slotId: string, catalystId: string): CraftResult {
     const d = this.data, L = d.forge.level, cost = craftCost(L);
+    if (!Object.hasOwn(SLOT_BY_ID, slotId)) return { err: 'Unknown equipment slot.' };
     const cat = CATALYSTS.find((c) => c.id === catalystId) || CATALYSTS[0]!;
+    if (cat.req && !forgeLevelPerks(L)[cat.req]) return { err: 'This catalyst is not unlocked yet.' };
     const full: Cost = Object.assign({}, cost, cat.cost);
     if (!this.canAfford(full)) return { err: 'Not enough resources.' };
     if (d.items.length >= 60) return { err: 'Inventory full (60). Salvage something.' };
@@ -750,6 +812,7 @@ const Save = {
   },
   reforge(uid: string, affixIdx: number): string | null {
     const d = this.data, it = d.items.find((x) => x.uid === uid); if (!it) return 'No item.';
+    if (!Number.isInteger(affixIdx) || !it.affixes[affixIdx]) return 'No such affix.';
     if (!forgeLevelPerks(d.forge.level).reforge) return 'Requires Forge level 3.';
     const cost = reforgeCost(); if (!this.canAfford(cost)) return 'Not enough resources.';
     const slot = SLOT_BY_ID[it.slot]!; const used = it.affixes.map((a) => a.stat);
@@ -762,7 +825,10 @@ const Save = {
   equip(uid: string): void { const d = this.data, it = d.items.find((x) => x.uid === uid); if (!it) return; d.equipped[it.slot] = uid; this.save(); },
   unequip(slot: string): void { delete this.data.equipped[slot]; this.save(); },
   transmute(rec: TransmuteRecipe, times = 1): string | null {
-    for (let i = 0; i < times; i++) { if (!this.canAfford(rec.from)) return i === 0 ? 'Not enough materials.' : null; this.pay(rec.from); this.grant(rec.to); }
+    if (!Number.isSafeInteger(times) || times < 1) return 'Invalid quantity.';
+    if (!forgeLevelPerks(this.data.forge.level).transmute) return 'Requires Forge level 2.';
+    if (!this.canAfford(rec.from)) return 'Not enough materials.';
+    for (let i = 0; i < times && this.canAfford(rec.from); i++) { this.pay(rec.from); this.grant(rec.to); }
     this.save(); return null;
   },
   buySigil(s: SigilDef): string | null { const d = this.data; if (d.sigils[s.id]) return 'Owned.'; if (d.embers < s.cost) return 'Not enough Soul Embers.'; d.embers -= s.cost; d.sigils[s.id] = true; this.save(); return null; },

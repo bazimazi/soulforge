@@ -137,7 +137,7 @@ function starweb(ui: UiHost): void {
       starweb(ui);
     };
     g.addEventListener('click', act);
-    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); } });
+    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!e.repeat) act(); } });
   });
   $('swRespec').onclick = () => { if (!confirm('Unlight every star for ' + U.fmt(cost) + ' gold?')) return; const err = Save.respecStarweb(); if (err) ui.toast(err); else { audio.play('uiback'); ui.refreshCurrency(); starweb(ui); } };
 }

@@ -122,6 +122,7 @@ export class MapView {
     this.mini = document.createElement('canvas');
     this.mini.id = 'minimap';
     this.mini.setAttribute('role', 'button');
+    this.mini.tabIndex = 0;
     this.mini.setAttribute('aria-label', 'Open map (M)');
     this.mini.title = 'Map (M)';
     this.miniCtx = this.mini.getContext('2d')!;

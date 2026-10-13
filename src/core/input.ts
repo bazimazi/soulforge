@@ -47,6 +47,8 @@ export class InputManager implements InputSource {
   constructor(target: Window = window, canvas?: HTMLElement | null) {
     target.addEventListener('keydown', (e) => {
       if (isTyping(e.target)) return;
+      // Space activates a focused control; it must not also queue a dash or suppress its click.
+      if (e.code === 'Space' && e.target instanceof Element && e.target.closest('button, [role="button"]')) return;
       if (!e.repeat && ACTIVE_KEYS.has(e.code)) this.activeQueued = true;
       if (!e.repeat && DASH_KEYS.has(e.code)) this.dashQueued = true;
       if (!e.repeat && ART_KEYS.has(e.code)) this.artQueued = true;
@@ -60,6 +62,7 @@ export class InputManager implements InputSource {
     target.addEventListener('blur', () => {
       this.keys.clear();
       this.touch = null;
+      this.flush();
       this.onBlur?.();
     });
     if (canvas) this.bindTouch(canvas);
@@ -70,14 +73,12 @@ export class InputManager implements InputSource {
     canvas.addEventListener(
       'touchstart',
       (e) => {
-        const t = e.changedTouches[0]!;
-        // right side of the screen taps the ability, left side is a floating stick
-        if (t.clientX > window.innerWidth * 0.6) {
-          this.activeQueued = true;
-          return;
-        }
-        this.touch = { id: t.identifier, sx: t.clientX, sy: t.clientY, dx: 0, dy: 0 };
         e.preventDefault();
+        for (const t of Array.from(e.changedTouches)) {
+          // Additional fingers must not steal the stick from the finger already moving it.
+          if (t.clientX > window.innerWidth * 0.6) this.activeQueued = true;
+          else if (!this.touch) this.touch = { id: t.identifier, sx: t.clientX, sy: t.clientY, dx: 0, dy: 0 };
+        }
       },
       opts,
     );
@@ -112,7 +113,10 @@ export class InputManager implements InputSource {
   /** Poll gamepad buttons once per frame for edge detection (call before simulation steps). */
   poll(): void {
     const gp = this.pad();
-    if (!gp) return;
+    if (!gp) {
+      this.padActiveHeld = this.padArtHeld = this.padDashHeld = this.padStartHeld = this.padMapHeld = false;
+      return;
+    }
     const act = ACTIVE_BUTTONS.some((i) => gp.buttons[i]?.pressed);
     if (act && !this.padActiveHeld) this.activeQueued = true;
     this.padActiveHeld = act;

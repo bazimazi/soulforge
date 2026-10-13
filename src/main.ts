@@ -56,6 +56,7 @@ function boot(): void {
   });
 
   const initAudio = () => {
+    const settings = Save.data.settings;
     audio.init();
     audio.setSfx(settings.sfx);
     audio.setMusic(settings.music);

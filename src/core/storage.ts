@@ -24,6 +24,7 @@ export class MemoryStore implements KeyValueStore {
 
 export class LocalStore implements KeyValueStore {
   private fallback = new MemoryStore();
+  private removed = new Set<string>();
   private get ls(): Storage | null {
     try {
       return typeof localStorage !== 'undefined' ? localStorage : null;
@@ -32,6 +33,9 @@ export class LocalStore implements KeyValueStore {
     }
   }
   get(key: string): string | null {
+    if (this.removed.has(key)) return null;
+    const pending = this.fallback.get(key);
+    if (pending !== null) return pending;
     try {
       return this.ls?.getItem(key) ?? this.fallback.get(key);
     } catch {
@@ -39,9 +43,11 @@ export class LocalStore implements KeyValueStore {
     }
   }
   set(key: string, value: string): boolean {
+    this.removed.delete(key);
     try {
       if (this.ls) {
         this.ls.setItem(key, value);
+        this.fallback.remove(key);
         return true;
       }
     } catch {
@@ -51,6 +57,7 @@ export class LocalStore implements KeyValueStore {
     return false;
   }
   remove(key: string): void {
+    this.removed.add(key);
     try {
       this.ls?.removeItem(key);
     } catch {}

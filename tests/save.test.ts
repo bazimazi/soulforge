@@ -256,3 +256,12 @@ describe('debounced save', () => {
     expect(JSON.parse(store.get(SAVE_KEY)!).gold).toBe(77);
   });
 });
+
+it('preserves the minimum spell intensity across save and reload', () => {
+  Save.load();
+  Save.data.settings.fxIntensity = 0.1;
+  Save.save();
+  Save.flush();
+  Save.load();
+  expect(Save.data.settings.fxIntensity).toBe(0.1);
+});

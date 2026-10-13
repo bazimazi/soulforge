@@ -36,6 +36,9 @@ const SYNTHETIC: Record<string, SourceInfo> = {
   thorns: { name: 'Thorns', icon: { g: 'shield', c: '#a3e635' }, hint: 'Damage reflected by thorns' },
   resonance: { name: 'Resonance', icon: { g: 'rune', c: '#c4b5fd' }, hint: 'Resonance bonuses' },
   ally: { name: 'Allies', icon: { g: 'minion', c: '#86efac' }, hint: 'Summoned allies' },
+  art: { name: 'Soul Art', icon: { g: 'star', c: '#fde68a' }, hint: 'Equipped Soul Art' },
+  starweb: { name: 'Starweb', icon: { g: 'rune', c: '#7dd3fc' }, hint: 'Starweb effects' },
+  keystone: { name: 'Keystones', icon: { g: 'star', c: '#c084fc' }, hint: 'Starweb keystone effects' },
 };
 
 /** Display name, icon and tooltip of a damage-source key. `evolved` tells whether a weapon id is evolved. */

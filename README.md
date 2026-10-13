@@ -1,7 +1,7 @@
 # SOULFORGE: Endless Night
 
 A browser survivors-like (Vampire Survivors lineage) with a heavy meta-progression layer — 12 characters,
-31 weapons with evolutions, elemental reactions, resonance, boons, shrines, a narrated story, talent trees, a
+35 weapons with evolutions, elemental reactions, resonance, boons, shrines, a narrated story, talent trees, a
 crafting forge and five biomes. Written in strict TypeScript, rendered with a batched **WebGL2** renderer with
 coloured HDR lighting, cast shadows, dissolve deaths, shockwave refraction, bloom and split-tone grading
 (Canvas2D fallback), installable and playable offline as a PWA.
@@ -86,7 +86,7 @@ Nine of them are unlocked through milestones (survive X minutes, kill totals, bo
   - _Transmute_: convert between Iron → Arcane Dust → Void Crystal → Starshard (and back).
   - _Sigils_: 22 run modifiers bought with Soul Embers (extra level-up choice, +1 weapon slot, timed free levels…).
 - **Stages** — 5 biomes with their own palettes, props and difficulty/reward multipliers, unlocked by surviving long enough in the previous one.
-- **Omens** — 9 optional difficulty pacts (Heat). Each Heat point is +8% gold, XP and materials.
+- **Omens** — 9 optional difficulty pacts (Heat). Each Heat point is +8% gold, character XP, Iron and Dust, plus +5% Soul Embers.
 - **Ascension** (title menu) — the long-term layer; see [docs/DESIGN.md › Fourth round](docs/DESIGN.md).
   - _Soul Rank_: an account level fed by every run; each rank is a Starweb point.
   - _Starweb_: an 84-star constellation talent graph shared by all champions, with notables and six
@@ -150,6 +150,7 @@ e2e/                 Playwright smoke tests
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design in depth.
+The [October 2026 review](docs/REVIEW.md) records the corrective changes, verification coverage, and remaining release validation.
 
 ### Performance
 

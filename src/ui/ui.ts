@@ -176,6 +176,7 @@ class UiController {
   private resName = '';
   private lvlKeys: KeyHandler | null = null;
   private claims: Record<string, [string, Reward]> = {};
+  private modalFocus: HTMLElement | null = null;
 
   init({ game, renderer, input }: UiDeps): void {
     this.game = game; this.R = renderer; this.input = input;
@@ -184,6 +185,7 @@ class UiController {
     this.selStage = STAGE_BY_ID[d.lastStage] ? d.lastStage : 'ashen';
     this.selTorment = Math.min(d.lastTorment || 0, Save.tormentMax(this.selStage));
     this.applyDisplaySettings();
+    window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => this.applyDisplaySettings());
     this.narrator = new Narrator(game);
     this.buildHud();
     game.events.on('levelUp', (options) => this.showLevelUp(options));
@@ -196,6 +198,14 @@ class UiController {
     input.onMeterKey = () => { if (this.game.state === 'play') this.meter?.toggle(); };
     this.showTitle();
     document.addEventListener('keydown', (e) => {
+      const modal = $('modal');
+      if (e.key === 'Tab' && !modal.classList.contains('hidden')) {
+        const controls = Array.from(modal.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"], input, select, textarea')).filter((el) => el.getClientRects().length);
+        const first = controls[0], last = controls[controls.length - 1];
+        if (!first) { e.preventDefault(); modal.focus(); }
+        else if (!modal.contains(document.activeElement) || (e.shiftKey && document.activeElement === first)) { e.preventDefault(); (e.shiftKey ? last : first)?.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
       if (e.key === 'Escape') {
         if ($('modal').classList.contains('hidden')) { if (this.game.state === 'play') this.showPause(); }
         else if (this.game.state === 'paused') this.closePause();
@@ -205,18 +215,23 @@ class UiController {
     // after InputManager's listener) so a SPACE that picks a level-up card is flushed, not cast.
     window.addEventListener('keydown', (e) => {
       const t = e.target;
-      if ((e.key === 'Enter' || e.key === ' ') && t instanceof HTMLElement && t.tagName !== 'BUTTON' && t.getAttribute('role') === 'button') { e.preventDefault(); t.click(); }
+      if (!e.repeat && (e.key === 'Enter' || e.key === ' ') && t instanceof HTMLElement && t.tagName !== 'BUTTON' && t.getAttribute('role') === 'button') { e.preventDefault(); t.click(); }
     });
   }
 
   /** Push persisted display settings into the renderer FX / FPS overlay. */
   applyDisplaySettings(): void {
     const s = Save.data.settings;
-    this.R.fx.shakeMul = s.reducedMotion ? 0 : s.shake;
-    this.R.fx.flashMul = s.reducedMotion ? 0.25 : 1;
+    const reduced = s.reducedMotion || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    this.R.fx.shakeMul = reduced ? 0 : s.shake;
+    this.R.fx.flashMul = reduced ? 0.25 : 1;
     this.R.fx.dmgEnabled = s.dmgNumbers;
     this.R.fx.intensity = s.fxIntensity;
     this.R.postEnabled = s.postfx;
+    if (this.R.quality !== s.quality) { this.R.quality = s.quality; this.R.resize(); }
+    audio.setSfx(s.sfx); audio.setMusic(s.music);
+    this.meter?.setOpen(s.dmgMeter);
+    document.documentElement.classList.toggle('reduced-motion', reduced);
     document.getElementById('fps')?.classList.toggle('hidden', !s.fps);
   }
 
@@ -227,8 +242,17 @@ class UiController {
     this.screenName = name;
     return d;
   }
-  modal(html: string, cls = ''): HTMLElement { const m = $('modal'); m.innerHTML = `<div class="panel modal-box ${cls}">${html}</div>`; m.classList.remove('hidden'); return m; }
-  closeModal(): void { const m = $('modal'); m.classList.add('hidden'); m.innerHTML = ''; }
+  modal(html: string, cls = ''): HTMLElement {
+    const m = $('modal');
+    if (m.classList.contains('hidden')) this.modalFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    m.innerHTML = `<div class="panel modal-box ${cls}">${html}</div>`; m.classList.remove('hidden');
+    m.setAttribute('role', 'dialog'); m.setAttribute('aria-modal', 'true'); m.tabIndex = -1;
+    const heading = m.querySelector('h2'); if (heading) { heading.id = 'modalTitle'; m.setAttribute('aria-labelledby', heading.id); }
+    this.input.flush();
+    (m.querySelector<HTMLElement>('[tabindex="0"], button:not(:disabled)') ?? m).focus({ preventScroll: true });
+    return m;
+  }
+  closeModal(): void { const m = $('modal'); m.classList.add('hidden'); m.innerHTML = ''; if (this.modalFocus?.isConnected) this.modalFocus.focus({ preventScroll: true }); this.modalFocus = null; }
   currencyBar(): string {
     const d = Save.data;
     return `<div class="currency"><span title="Gold">${ic({ g: 'coin', c: '#f5c542' }, 'sm')} ${U.fmt(d.gold)}</span><span title="Soul Embers">${ic({ g: 'ember', c: '#ff8a3c' }, 'sm')} ${d.embers}</span>` +
@@ -266,7 +290,7 @@ class UiController {
       <div class="title-stats panel" style="padding:8px 14px">${this.currencyBar()}${soulRankHtml()}</div>
       <div class="logo"><div class="ember-ring"></div><h1>SOULFORGE</h1><div class="sub">Endless Night</div></div>
       <div class="menu">
-        ${canContinue ? `<button class="btn primary continue" id="contBtn"><img src="${S.portraitURL(lastC, 64)}" alt=""><span><b>Continue</b><small>${lastC.name} · ${lastS.name}</small></span></button>` : ''}
+        ${canContinue ? `<button class="btn primary continue" id="contBtn"><img src="${S.portraitURL(lastC, 64)}" alt=""><span><b>Quick Start</b><small>${lastC.name} · ${lastS.name}</small></span></button>` : ''}
         <button class="btn ${canContinue ? '' : 'primary'}" id="playBtn">${canContinue ? 'New Night' : 'Play'}</button>
         <button class="btn" id="talentsBtn">Talents</button>
         <button class="btn" id="ascendBtn">Ascension${contractsReady() || Save.starPointsFree() > 0 ? ' <span class="badge">!</span>' : ''}</button>
@@ -277,7 +301,7 @@ class UiController {
       <div class="whisper">“${esc(tip)}”</div>
       <div class="title-foot">Best: ${U.fmtTime(d.stats.bestTime)} · Kills: ${U.fmt(d.stats.kills)} · Runs: ${d.stats.runs}<span class="kbd-hint"> &nbsp;|&nbsp; <span class="kbd">WASD</span> move · <span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</span></div>`);
     $('playBtn').onclick = () => { audio.play('ui'); this.showChars(); };
-    if (canContinue) $('contBtn').onclick = () => { audio.play('buy'); this.selChar = lastC.id; this.selStage = lastS.id; this.startRun(); };
+    if (canContinue) $('contBtn').onclick = () => { audio.play('buy'); this.selChar = lastC.id; this.selStage = lastS.id; this.selTorment = Math.min(d.lastTorment, Save.tormentMax(lastS.id)); this.startRun(); };
     $('talentsBtn').onclick = () => { audio.play('ui'); this.showTalents(); };
     $('ascendBtn').onclick = () => { audio.play('ui'); this.showAscension(contractsReady() && !Save.starPointsFree() ? 'contracts' : 'starweb'); };
     $('forgeBtn').onclick = () => { audio.play('ui'); this.showForge(); };
@@ -335,7 +359,7 @@ class UiController {
     const sig = WEAPONS[c.signature]!;
     const base = Object.assign({}, CHAR_BASE, c.stats);
     const ms = (k: string): number => meta.stats[k] || 0;
-    const show: [string, string | number][] = [['maxHp', Math.round(base.maxHp + ms('maxHp'))], ['armor', (base.armor + ms('armor')).toFixed(1)], ['speed', Math.round(base.speed * (1 + ms('speed')))], ['might', U.pct(base.might + ms('might'))], ['area', U.pct(base.area + ms('area'))], ['cooldown', U.pct(base.cooldown * (1 - ms('cooldown')))], ['crit', U.pct(base.crit + ms('crit'))], ['dodge', U.pct(base.dodge + ms('dodge'))], ['luck', U.pct(base.luck + ms('luck'))], ['growth', U.pct(base.growth + ms('growth'))]];
+    const show: [string, string | number][] = [['maxHp', Math.round((base.maxHp + ms('maxHp')) * (1 + ms('maxHpPct')))], ['armor', (base.armor + ms('armor')).toFixed(1)], ['speed', Math.round(base.speed * (1 + ms('speed')))], ['might', U.pct(base.might + ms('might') + (meta.flags.sw_jugg ? Math.min(0.2, Math.max(0, base.armor + ms('armor')) * 0.01) : 0))], ['area', U.pct(base.area + ms('area'))], ['cooldown', U.pct(base.cooldown * Math.max(0.25, 1 - ms('cooldown')))], ['crit', U.pct(base.crit + ms('crit') + Math.max(0, base.luck + ms('luck') - 1) * 0.1)], ['dodge', U.pct(Math.min(0.75, base.dodge + ms('dodge')))], ['luck', U.pct(base.luck + ms('luck'))], ['growth', U.pct(base.growth + ms('growth'))]];
     const chapters = c.codex.map((ch, i) => cd.chapters[i] ? `<span class="tag" style="background:#3b2a5a;color:#e9d5ff">${ch.title}</span>` : '').join(' ');
     const xpNeed = charXpFor(cd.level);
     const evo = sig.evo;
@@ -359,10 +383,11 @@ class UiController {
   showSetup(): void {
     const d = Save.data;
     if (!d.stages.unlocked.includes(this.selStage)) this.selStage = 'ashen';
+    this.selTorment = Math.min(this.selTorment, Save.tormentMax(this.selStage));
     const omensUnlocked = d.stats.bossKills >= 1;
     this.screen('setup', this.head('Choose the Night') + `<div class="screen-body layout-2"><div><h3 class="gold">Stage</h3><div class="stage-list" id="stageList"></div>
       <div id="tormentBox"></div>
-      <h3 class="gold" style="margin-top:20px">Omens <span class="muted" style="font-size:13px;font-weight:400">— optional pacts that raise the Heat. Each Heat: +8% gold, XP and materials.</span></h3>
+      <h3 class="gold" style="margin-top:20px">Omens <span class="muted" style="font-size:13px;font-weight:400">— optional pacts that raise the Heat. Each Heat: +8% gold, character XP, Iron and Dust; +5% Soul Embers.</span></h3>
       ${omensUnlocked ? '<div class="col" id="omenList"></div>' : '<div class="muted panel" style="padding:12px">Defeat your first boss to unlock Omens.</div>'}</div>
       <div class="panel" style="padding:16px;position:sticky;top:10px" id="setupSide"></div></div>`);
     this.bindBack(() => this.showChars());
@@ -377,7 +402,7 @@ class UiController {
       applyTorment(m, t);
       box.innerHTML = `<h3 class="gold" style="margin-top:20px">Torment <span class="muted" style="font-size:13px;font-weight:400">— the deeper night. Survive 15:00 at a tier to open the next (up to ${TORMENT_MAX}).</span></h3>
         <div class="panel torment-pick ${t ? 'on' : ''}"><div class="rk"><button id="tDown" aria-label="Lower Torment" ${t > 0 ? '' : 'disabled'}>−</button><b>${t ? 'Torment ' + roman(t) : 'Normal'}</b><button id="tUp" aria-label="Raise Torment" ${t < max ? '' : 'disabled'}>+</button></div>
-        <div class="tip grow">${t ? `Enemy health ×${m.enemyHp.toFixed(1)}, damage ×${m.enemyDmg.toFixed(2)}, Heralds ×${m.bossHp.toFixed(2)}${t >= 4 ? ', elites +1 affix' : ''}${t >= 3 ? ', legendary boons' : ''}. <span class="gold">Rewards ×${tormentReward(t).toFixed(1)} and Eclipse Shards.</span>` : `Unlocked up to Torment ${roman(max)} here.`}</div></div>`;
+        <div class="tip grow">${t ? `Enemy health ×${m.enemyHp.toFixed(1)}, damage ×${m.enemyDmg.toFixed(2)}, Heralds ×${m.bossHp.toFixed(2)}${t >= 4 ? ', elites +1 affix' : ''}${t >= 3 ? ', legendary boons' : ''}. <span class="gold">Gold, character XP, Iron and Dust ×${tormentReward(t).toFixed(1)}; Eclipse Shard drops.</span>` : `Unlocked up to Torment ${roman(max)} here.`}</div></div>`;
       const step = (dv: number): void => { this.selTorment = U.clamp(this.selTorment + dv, 0, max); d.lastTorment = this.selTorment; Save.save(); audio.play('ui'); renderTorment(); renderSide(); };
       $('tDown').onclick = () => step(-1); $('tUp').onclick = () => step(1);
     };
@@ -393,7 +418,7 @@ class UiController {
       const art = d.art ? ART_BY_ID[d.art] : undefined;
       $('setupSide').innerHTML = `<div class="row"><img src="${S.portraitURL(c, 96)}" alt="" style="width:72px;height:72px;border-radius:8px"><div><h3 style="margin:0;color:var(--gold)">${c.name}${Save.charData(c.id).ascension ? ` <span class="asc-pip">${roman(Save.charData(c.id).ascension)}</span>` : ''}</h3><div class="muted">${c.title}</div></div></div>
         <div style="margin:12px 0"><b>${st.name}</b>${this.selTorment ? ` <span class="tag torment-tag">Torment ${roman(this.selTorment)}</span>` : ''}<div class="tip">${st.desc}</div></div>
-        <div class="heat">HEAT ${heat}</div><div class="tip">Rewards ×${(heatBonus(heat) * tormentReward(this.selTorment)).toFixed(2)} · Stage ×${st.reward}</div>
+        <div class="heat">HEAT ${heat}</div><div class="tip">Gold, character XP, Iron and Dust ×${(heatBonus(heat) * tormentReward(this.selTorment)).toFixed(2)}<br>Stage: gold ×${st.reward}, character XP ×${Math.sqrt(st.reward).toFixed(2)}</div>
         ${known.length ? `<div style="margin-top:12px"><label class="tip" for="artSel">Soul Art (R)</label><select id="artSel" style="width:100%"><option value="">— none —</option>${known.map((id) => `<option value="${id}" ${d.art === id ? 'selected' : ''}>${ART_BY_ID[id]!.name} · Lv ${d.arts[id]}</option>`).join('')}</select>${art ? `<div class="tip" style="margin-top:4px">${esc(art.desc)}</div>` : ''}</div>` : ''}
         <button class="btn primary" id="beginBtn" style="width:100%;margin-top:16px;font-size:20px">Begin the Night</button>`;
       $('beginBtn').onclick = () => { audio.play('buy'); d.lastStage = this.selStage; d.lastTorment = this.selTorment; Save.save(); this.startRun(); };
@@ -404,6 +429,8 @@ class UiController {
   }
   startRun(): void {
     const d = Save.data;
+    if (!Save.charUnlocked(this.selChar)) this.selChar = 'kael';
+    if (!d.stages.unlocked.includes(this.selStage)) this.selStage = 'ashen';
     const omens: Record<string, number> = {}; for (const id in d.omens) { const r = d.omens[id] || 0; if (r > 0) omens[id] = r; }
     $('screens').innerHTML = ''; this.screenName = null;
     $('hud').classList.remove('hidden');
@@ -446,9 +473,8 @@ class UiController {
   /* ============ FORGE ============ */
   showForge(tab?: ForgeTab): void {
     if (tab) this.forgeTab = tab;
-    const f = Save.data.forge, need = forgeXpFor(f.level);
     const tabs: [ForgeTab, string][] = [['anvil', 'Anvil'], ['armory', 'Armory'], ['transmute', 'Transmute'], ['sigils', 'Sigils']];
-    this.screen('forge', this.head('The Forge') + `<div class="screen-body"><div class="row" style="margin-bottom:10px"><b class="gold">Forge Level ${f.level}</b><div class="bar grow" style="max-width:300px"><i style="width:${(f.xp / need * 100).toFixed(1)}%"></i></div><span class="tip">${U.fmt(f.xp)} / ${U.fmt(need)} · gold spent here levels the Forge: better rarities, stronger affixes, new features</span></div>
+    this.screen('forge', this.head('The Forge') + `<div class="screen-body"><div id="forgeProgress">${this.forgeProgress()}</div>
       <div class="tabs">${tabs.map(([id, n]) => `<button class="${this.forgeTab === id ? 'on' : ''}" data-t="${id}">${n}</button>`).join('')}</div><div id="forgeBody"></div></div>`);
     this.bindBack(() => this.showTitle());
     $$(document, '.tabs button').forEach((b) => b.onclick = () => { audio.play('ui'); this.showForge(b.dataset.t as ForgeTab); });
@@ -459,7 +485,15 @@ class UiController {
       case 'sigils': this.forge_sigils(); break;
     }
   }
-  refreshCurrency(): void { $$(document, '.currency').forEach((el) => el.outerHTML = this.currencyBar()); }
+  forgeProgress(): string {
+    const f = Save.data.forge, need = forgeXpFor(f.level);
+    return `<div class="row" style="margin-bottom:10px"><b class="gold">Forge Level ${f.level}</b><div class="bar grow" style="max-width:300px"><i style="width:${(f.xp / need * 100).toFixed(1)}%"></i></div><span class="tip">${U.fmt(f.xp)} / ${U.fmt(need)} · gold spent here levels the Forge: better rarities, stronger affixes, new features</span></div>`;
+  }
+  refreshCurrency(): void {
+    $$(document, '.currency').forEach((el) => el.outerHTML = this.currencyBar());
+    const progress = document.getElementById('forgeProgress');
+    if (progress) progress.innerHTML = this.forgeProgress();
+  }
   forge_anvil(): void {
     const d = Save.data, total = Save.anvilTotal();
     const tiers: [number, string][] = [[1, 'Foundation'], [2, 'Refinement'], [3, 'Mastercraft'], [4, 'Mastery — endless'], [5, 'Celestial']];
@@ -470,6 +504,7 @@ class UiController {
   forge_armory(): void {
     const d = Save.data, L = d.forge.level, perks = forgeLevelPerks(L), cost = craftCost(L);
     const cats = CATALYSTS.filter((c) => !c.req || perks[c.req]);
+    if (!cats.some((c) => c.id === this.craftCat)) this.craftCat = 'none';
     $('forgeBody').innerHTML = `<div class="forge-layout">
       <div class="col"><h3 class="gold" style="margin:0">Equipped</h3><div class="slots" id="eqSlots"></div>
         <h3 class="gold" style="margin:10px 0 0">Craft</h3><div class="panel" style="padding:10px" class="col">
@@ -606,34 +641,47 @@ class UiController {
   }
 
   /* ============ SETTINGS ============ */
-  showSettings(): void {
+  showSettings(inRun = false): void {
+    if (inRun) {
+      if (this.game.state !== 'play' && this.game.state !== 'paused') return;
+      this.game.state = 'paused'; this.input.flush();
+    }
     const s = Save.data.settings;
-    this.screen('settings', this.head('Settings') + `<div class="screen-body" style="max-width:700px"><div class="panel" style="padding:10px 16px">
+    const content = `<div class="panel" style="padding:10px 16px">
       <label class="setting"><span>Sound effects</span><input type="range" min="0" max="1" step="0.05" value="${s.sfx}" id="sfxR"></label>
       <label class="setting"><span>Music</span><input type="range" min="0" max="1" step="0.05" value="${s.music}" id="musR"></label>
       <label class="setting"><span>Screen shake</span><input type="checkbox" ${s.shake ? 'checked' : ''} id="shakeC"></label>
       <label class="setting"><span>Reduced motion</span><input type="checkbox" ${s.reducedMotion ? 'checked' : ''} id="motionC"></label>
-      <label class="setting"><span>Spell effects</span><input type="range" min="0.25" max="1" step="0.05" value="${s.fxIntensity}" id="fxR"></label>
+      <label class="setting"><span>Spell effects <output id="fxValue">${Math.round(s.fxIntensity * 100)}%</output></span><input type="range" min="0.1" max="1" step="0.05" value="${s.fxIntensity}" id="fxR"></label>
+      <div class="tip">Lower spell effects for a clearer battlefield. Enemy attack warnings stay visible; damage and range are unchanged.</div>
       <label class="setting"><span>Damage numbers</span><input type="checkbox" ${s.dmgNumbers ? 'checked' : ''} id="dmgC"></label>
       <label class="setting"><span>Bloom &amp; colour grading</span><input type="checkbox" ${s.postfx ? 'checked' : ''} id="postC"></label>
       <label class="setting"><span>Damage meter (T)</span><input type="checkbox" ${s.dmgMeter ? 'checked' : ''} id="meterC"></label>
       <label class="setting"><span>Show FPS</span><input type="checkbox" ${s.fps ? 'checked' : ''} id="fpsC"></label>
       <label class="setting"><span>Render quality</span><select id="qualS"><option value="0.6" ${s.quality === 0.6 ? 'selected' : ''}>Low</option><option value="0.8" ${s.quality === 0.8 ? 'selected' : ''}>Medium</option><option value="1" ${s.quality === 1 ? 'selected' : ''}>High</option></select></label>
-      <div class="setting"><span>Save data</span><div class="row"><button class="btn small" id="expBtn">Export</button><button class="btn small" id="impBtn">Import</button><button class="btn small danger" id="resetBtn">Reset</button></div></div>
-      <textarea id="saveTxt" aria-label="Save code" placeholder="Export writes your save code here. Paste a code and press Import to restore."></textarea></div></div>`);
-    this.bindBack(() => this.showTitle());
+      ${inRun ? '' : `<div class="setting"><span>Save data</span><div class="row"><button class="btn small" id="expBtn">Export</button><button class="btn small" id="impBtn">Import</button><button class="btn small danger" id="resetBtn">Reset</button></div></div>
+      <textarea id="saveTxt" aria-label="Save code" placeholder="Export writes your save code here. Paste a code and press Import to restore."></textarea>`}</div>`;
+    if (inRun) {
+      this.modal(`<h2>Settings</h2><div class="sub">Run paused · changes apply immediately</div>${content}<div class="lvl-actions"><button class="btn" id="settingsPause">Pause menu</button><button class="btn primary" id="settingsResume">Resume</button></div>`, 'run-settings');
+      $('settingsPause').onclick = () => this.showPause();
+      $('settingsResume').onclick = () => this.closePause();
+    } else {
+      this.screen('settings', this.head('Settings') + `<div class="screen-body" style="max-width:700px">${content}</div>`);
+      this.bindBack(() => this.showTitle());
+    }
     const val = (e: Event): HTMLInputElement => e.target as HTMLInputElement;
     $('sfxR').oninput = (e) => { s.sfx = Number(val(e).value); audio.setSfx(s.sfx); Save.save(); };
     $('sfxR').onchange = () => audio.play('ui');
     $('musR').oninput = (e) => { s.music = Number(val(e).value); audio.setMusic(s.music); Save.save(); };
     $('shakeC').onchange = (e) => { s.shake = val(e).checked ? 1 : 0; this.applyDisplaySettings(); Save.save(); };
     $('motionC').onchange = (e) => { s.reducedMotion = val(e).checked; this.applyDisplaySettings(); Save.save(); };
-    $('fxR').oninput = (e) => { s.fxIntensity = Number(val(e).value); this.applyDisplaySettings(); Save.save(); };
+    $('fxR').oninput = (e) => { s.fxIntensity = Number(val(e).value); $('fxValue').textContent = Math.round(s.fxIntensity * 100) + '%'; this.applyDisplaySettings(); Save.save(); };
     $('dmgC').onchange = (e) => { s.dmgNumbers = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('postC').onchange = (e) => { s.postfx = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('fpsC').onchange = (e) => { s.fps = val(e).checked; this.applyDisplaySettings(); Save.save(); };
     $('meterC').onchange = (e) => { s.dmgMeter = val(e).checked; this.meter?.setOpen(s.dmgMeter); Save.save(); };
     $('qualS').onchange = (e) => { s.quality = Number((e.target as HTMLSelectElement).value); this.R.quality = s.quality; this.R.resize(); Save.save(); };
+    if (inRun) return;
     const txt = $<HTMLTextAreaElement>('saveTxt');
     $('expBtn').onclick = () => { txt.value = Save.export(); this.toast('Save code exported. Copy it somewhere safe.'); };
     $('impBtn').onclick = () => { if (Save.import(txt.value.trim())) { this.applyDisplaySettings(); this.toast('Save imported.'); this.showTitle(); } else this.toast('Invalid save code.'); };
@@ -642,7 +690,7 @@ class UiController {
 
   /* ============ HUD ============ */
   buildHud(): void {
-    $('hud').innerHTML = `<div class="top"><div id="xpbar"><i></i><span id="xpTxt"></span></div><div class="toprow"><div class="col" style="gap:2px"><div class="hud-stat">${ic({ g: 'skull', c: '#f87171' }, 'sm')}<span id="killsTxt">0</span></div><div class="hud-stat">${ic({ g: 'coin', c: '#f5c542' }, 'sm')}<span id="goldTxt">0</span></div></div><div id="timer">00:00</div><div class="col" style="gap:2px;align-items:flex-end"><button type="button" class="hud-pause" id="pauseBtn" aria-label="Pause">❚❚</button><div class="hud-stat" id="heatTxt"></div><div class="hud-stat" id="stageTxt"></div></div></div></div>
+    $('hud').innerHTML = `<div class="top"><div id="xpbar"><i></i><span id="xpTxt"></span></div><div class="toprow"><div class="col" style="gap:2px"><div class="hud-stat">${ic({ g: 'skull', c: '#f87171' }, 'sm')}<span id="killsTxt">0</span></div><div class="hud-stat">${ic({ g: 'coin', c: '#f5c542' }, 'sm')}<span id="goldTxt">0</span></div></div><div id="timer">00:00</div><div class="col" style="gap:2px;align-items:flex-end"><div class="hud-actions"><button type="button" class="hud-pause hud-settings" id="hudSettingsBtn" aria-label="Settings" title="Settings">⚙</button><button type="button" class="hud-pause" id="pauseBtn" aria-label="Pause" title="Pause">❚❚</button></div><div class="hud-stat" id="heatTxt"></div><div class="hud-stat" id="stageTxt"></div></div></div></div>
       <div id="bossbar" class="hidden"><div class="nm" id="bossNm"></div><div class="bar"><i id="bossHp"></i><u></u></div><div class="ep" id="bossEp"></div></div>
       <div id="combo" class="hidden"><b id="comboN">0</b><span id="comboName"></span><div class="cbar"><i id="comboBar"></i></div></div>
       <div id="boons"></div>
@@ -666,6 +714,7 @@ class UiController {
     // touch players have no Esc/P key
     const pb = $('pauseBtn');
     pb.onclick = () => { pb.blur(); this.showPause(); };
+    $('hudSettingsBtn').onclick = () => { $('hudSettingsBtn').blur(); this.showSettings(true); };
   }
   buildSlots(): void {
     const g = this.game, p = g.player, E = this.hudEls!;
@@ -729,7 +778,7 @@ class UiController {
     const nb = (p.boons as string[]).length * 2 + (g.phoenixUsed ? 1 : 0); // a spent Phoenix Feather greys out
     if (nb !== this.hudBoons) { this.hudBoons = nb; E.boons.innerHTML = (p.boons as string[]).map((id) => { const b = BOON_BY_ID[id]!, spent = id === 'b_phoenix' && g.phoenixUsed; return `<div class="boon${spent ? ' spent' : ''}" title="${b.name}${spent ? ' (spent)' : ''} — ${b.desc}"><img src="${S.iconURL(b.icon)}" alt="${b.name}"></div>`; }).join(''); }
     // shrine buff / soul well trial
-    const buff = g.trial ? 'Soul Well · ' + Math.ceil(g.trial.t) + 's' : g.buffs.length ? 'Quickening · ' + Math.ceil(g.buffs[0]!.t) + 's' : '';
+    const buff = [g.trial ? 'Soul Well · ' + Math.ceil(g.trial.t) + 's' : '', ...g.buffs.map((b) => (b.id === 'haste' ? 'Quickening' : b.id === 'covenant' ? 'Ember Covenant' : b.id) + ' · ' + Math.ceil(b.t) + 's')].filter(Boolean).join(' · ');
     if (buff !== this.hudBuff) { this.hudBuff = buff; E.buff.toggle('hidden', !buff); E.buff.setText(buff); E.buff.toggle('trial', !!g.trial); }
     // slots: compare the flattened build state without allocating; rebuild markup only on change
     let i = 0;
@@ -786,7 +835,7 @@ class UiController {
     };
     const pick = (o: LevelOption): void => { this.setLvlKeys(null); this.closeModal(); g.pickOption(o); this.resumePlay(); };
     const render = (opts: LevelOption[]): void => {
-      this.modal(`<h2>Level ${p.level}</h2><div class="sub">${this.banishMode ? '<span class="bad">Choose an option to BANISH for this run</span>' : 'Choose an upgrade · press 1-4'}</div><div class="cards">${opts.map(card).join('')}</div>
+      this.modal(`<h2>Level ${p.level}</h2><div class="sub">${this.banishMode ? '<span class="bad">Choose an option to BANISH for this run</span>' : 'Choose an upgrade · press 1–' + opts.length}</div><div class="cards">${opts.map(card).join('')}</div>
         <div class="lvl-actions"><button class="btn small" id="rerollBtn" ${p.rerolls > 0 ? '' : 'disabled'}>Reroll (${p.rerolls})</button><button class="btn small" id="skipBtn" ${p.skips > 0 ? '' : 'disabled'}>Skip (${p.skips})</button><button class="btn small ${this.banishMode ? 'danger' : ''}" id="banishBtn" ${p.banishes > 0 ? '' : 'disabled'}>Banish (${p.banishes})</button></div>`);
       $$($('modal'), '.card').forEach((el) => el.onclick = () => {
         const o = opts[Number(el.dataset.i)]!;
@@ -796,7 +845,7 @@ class UiController {
       $('rerollBtn').onclick = () => { const n = g.reroll(); if (n) { audio.play('ui'); render(n); } };
       $('skipBtn').onclick = () => { if (p.skips > 0) { audio.play('ui'); this.setLvlKeys(null); this.closeModal(); g.skip(); this.resumePlay(); } };
       $('banishBtn').onclick = () => { this.banishMode = !this.banishMode; render(opts); };
-      this.setLvlKeys((e) => { const i = parseInt(e.key) - 1; if (i >= 0 && i < opts.length) { const c = document.querySelector<HTMLElement>(`#modal .card[data-i="${i}"]`); if (c) c.click(); } });
+      this.setLvlKeys((e) => { if (e.repeat) return; const i = Number(e.key) - 1; if (i >= 0 && i < opts.length) { const c = document.querySelector<HTMLElement>(`#modal .card[data-i="${i}"]`); if (c) c.click(); } });
     };
     render(options);
   }
@@ -816,7 +865,7 @@ class UiController {
     this.modal(`<div class="chest-art ${boss ? 'boss' : ''}">${ic({ g: 'chest', c: boss ? '#ff44aa' : '#ffd700' }, 'lg')}</div><h2>${boss ? 'Boss Trove' : 'Treasure Chest'}</h2><div class="sub">${rewards.some((r) => r.type === 'apotheosis') ? 'An evolved weapon ascends beyond its form.' : rewards.some((r) => r.type === 'evolve') ? 'A weapon has transcended its form.' : boss ? 'Five treasures.' : 'The night rewards the brave.'}</div><div class="rewards">${html}</div><div class="lvl-actions"><button class="btn primary" id="chestOk">Continue</button></div>`);
     let done = false;
     // on `window` (registered after InputManager) so the flush in resumePlay() runs after it queued SPACE
-    const kh = (e: KeyboardEvent): void => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); ok(); } };
+    const kh = (e: KeyboardEvent): void => { if (!e.repeat && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); ok(); } };
     const ok = (): void => { if (done) return; done = true; window.removeEventListener('keydown', kh); this.closeModal(); g.closeChest(); this.resumePlay(); };
     $('chestOk').onclick = ok;
     window.addEventListener('keydown', kh);
@@ -830,12 +879,12 @@ class UiController {
     let done = false;
     const pick = (b: BoonDef): void => { if (done) return; done = true; this.setLvlKeys(null); this.closeModal(); g.pickBoon(b); this.notice('Boon: ' + b.name, '#e9d5ff', 2.5); this.resumePlay(); };
     $$($('modal'), '.card').forEach((el) => el.onclick = () => pick(options[Number(el.dataset.i)]!));
-    this.setLvlKeys((e) => { const i = parseInt(e.key) - 1; if (i >= 0 && i < options.length) pick(options[i]!); });
+    this.setLvlKeys((e) => { if (e.repeat) return; const i = Number(e.key) - 1; if (i >= 0 && i < options.length) pick(options[i]!); });
   }
 
   /* ============ PAUSE ============ */
   showPause(): void {
-    const g = this.game, p = g.player; if (g.state !== 'play') return;
+    const g = this.game, p = g.player; if (g.state !== 'play' && g.state !== 'paused') return;
     g.state = 'paused';
     const st = p.stats;
     const rows: [string, string | number][] = [['maxHp', st.maxHp], ['regen', st.regen.toFixed(2) + '/s'], ['armor', st.armor.toFixed(1)], ['speed', Math.round(st.speed)], ['might', U.pct(st.might)], ['area', U.pct(st.area)], ['projSpeed', U.pct(st.projSpeed)], ['duration', U.pct(st.duration)], ['amount', '+' + st.amount], ['cooldown', U.pct(st.cooldown)], ['crit', U.pct(st.crit)], ['critDmg', U.pct(st.critDmg)], ['dodge', U.pct(st.dodge)], ['lifesteal', U.pct(st.lifesteal, 1)], ['luck', U.pct(st.luck)], ['growth', U.pct(st.growth)], ['greed', U.pct(st.greed)], ['magnet', Math.round(st.magnet)], ['curse', U.pct(st.curse)], ['revival', p.revivals]];
@@ -844,8 +893,9 @@ class UiController {
       ${(p.boons as string[]).length ? `<h3 class="gold" style="margin:10px 0 6px">Boons</h3><div class="pause-items">${(p.boons as string[]).map((id) => { const b = BOON_BY_ID[id]!; return `<div class="it" title="${b.desc}"><img src="${S.iconURL(b.icon)}" alt=""><span>${b.name}</span></div>`; }).join('')}</div>` : ''}
       ${g.resonance.some((r) => r.tier) ? `<h3 class="gold" style="margin:10px 0 6px">Resonance</h3>${g.resonance.filter((r) => r.tier).map((r) => `<div class="tip"><b style="color:${r.def.color}">${r.def.name} ${r.count}</b> — ${r.def.tiers.slice(0, r.tier).map((t) => t.desc).join(' ')}</div>`).join('')}` : ''}
       <h3 class="gold" style="margin:10px 0 6px">${p.char.trait.name}</h3><div class="tip">${p.char.trait.desc}</div></div></div>
-      <div class="lvl-actions"><button class="btn primary" id="resumeBtn">Resume</button><button class="btn danger" id="quitBtn">Abandon Run</button></div>`);
+      <div class="lvl-actions"><button class="btn primary" id="resumeBtn">Resume</button><button class="btn" id="pauseSettingsBtn">Settings</button><button class="btn danger" id="quitBtn">Abandon Run</button></div>`);
     $('resumeBtn').onclick = () => this.closePause();
+    $('pauseSettingsBtn').onclick = () => this.showSettings(true);
     $('quitBtn').onclick = () => { if (confirm('Abandon this run? Rewards are still collected.')) { this.closeModal(); g.quit(); this.narrator.clear(); this.narrator.epitaph = ''; this.showGameOver(g.summary(), true); } };
   }
   closePause(): void { this.closeModal(); if (this.game.state === 'paused') { this.game.state = 'play'; this.input.flush(); } }

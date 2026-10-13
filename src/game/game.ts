@@ -7,6 +7,7 @@
  * The same class runs in the browser and in Node-based simulation tests.
  */
 import { Emitter } from '../core/events';
+import { segmentCircleHit } from '../core/collision';
 import { rand, simRng } from '../core/rng';
 import { SpatialHash } from '../core/spatial-hash';
 import { U } from '../core/util';
@@ -132,7 +133,7 @@ const PULL = { speed: 380, accel: 900, max: 2400, reach: 12 };
 const HEX = ENEMIES.totem!.aura!;
 
 /** Damage-meter key of a damage source: character-kit damage (active, trait, talents) pools under `skill`. */
-function dmgKey(w: DamageSource): string { return w.ability ? 'skill' : w.id || 'x'; }
+function dmgKey(w: DamageSource): string { return w.id === 'art' ? 'art' : w.ability ? 'skill' : w.id || 'x'; }
 
 /** Signed smallest difference between two angles, in (-π, π]. */
 function angleDiff(a: number, b: number): number {
@@ -333,7 +334,7 @@ export class Game {
     this.gemCombo = 0; this.gemComboT = 0; this.uStormT = 4; this.uAegisT = 20; this.uStarT = 8; this.pulseT = 60; this.tlT = 300;
     this.boss = null; this.levelQueue = 0; this.chestQueue = []; this.banished = new Set();
     this.spawnTable = SPAWN_TABLE[0]!; this._diff = null; this._diffT = -1;
-    this.eclipse = false;
+    this.eclipse = false; this.lastHitBy = '';
     this.runMight = 0;
     this.hazards = []; this.shrines = []; this.buffs = []; this.boonQueue = 0; this.combo = 0; this.comboT = 0; this.bestCombo = 0; this.comboTier = 0;
     this.reactions = 0; this.shrinesUsed = 0; this.resonance = []; this.trial = null; this.shrineT = 40; this.curseBonus = 0; this.harvestMight = 0; this.bannerMight = 0;
@@ -458,18 +459,29 @@ export class Game {
     this.dt = dt; this.time += dt; this.frame++;
     this.snapshotPositions();
     this.runTimers(dt);
+    if (this.state !== 'play') return;
     this.updatePlayer(dt);
+    if (this.state !== 'play') return;
     this.updateWeapons(dt);
+    if (this.state !== 'play') return;
     this.rebuildGrid();
     this.updateSpawns(dt);
     this.updateEnemies(dt);
+    if (this.state !== 'play') return;
     this.updateProjectiles(dt);
+    if (this.state !== 'play') return;
     this.updateEnemyProjectiles(dt);
+    if (this.state !== 'play') return;
     this.updateZones(dt);
+    if (this.state !== 'play') return;
     this.updateMines(dt);
+    if (this.state !== 'play') return;
     this.updateAllies(dt);
+    if (this.state !== 'play') return;
     this.updatePickups(dt);
+    if (this.state !== 'play') return;
     this.updateHazards(dt);
+    if (this.state !== 'play') return;
     this.updateShrines(dt);
     this.updateMetaEffects(dt);
     if (this.frame % 12 === 0) this.recalc();
@@ -505,15 +517,17 @@ export class Game {
   private updatePlayer(dt: number): void {
     const p = this.player, st = p.stats, inp = this.input;
     let mx = inp.moveX(), my = inp.moveY();
-    const l = Math.hypot(mx, my); if (l > 1) { mx /= l; my /= l; }
+    const length = Math.hypot(mx, my); if (length > 1) { mx /= length; my /= length; }
+    const l = Math.min(1, length);
     p.move.x = mx; p.move.y = my;
     if (l > 0.01) { p.face.x = mx / (l || 1); p.face.y = my / (l || 1); p.walkT += dt * 9; }
     let spd = st.speed;
     if (p.f.adrenaline && p.hp < st.maxHp * 0.3) spd *= 1.2;
     if (p.slowT > 0) { p.slowT -= dt; spd *= 0.6; }
     if (p.dashT > 0) {
-      p.dashT -= dt;
-      const step = p.dashSpeed * dt;
+      const dashDt = Math.min(dt, p.dashT);
+      p.dashT = Math.max(0, p.dashT - dt);
+      const step = p.dashSpeed * dashDt;
       p.x += p.dashDx * step; p.y += p.dashDy * step;
       p.dashAcc += step;
       if (p.dashOnStep && p.dashAcc >= p.dashStepDist) { p.dashAcc = 0; p.dashOnStep(p.x, p.y); }
@@ -543,14 +557,16 @@ export class Game {
   }
   /** The ability's cooldown after Ability Cooldown and Ability Rank. */
   activeCooldown(): number { const p = this.player; return p.char.active.cd * p.stats.activeCd * (1 - ABILITY_RANK_CD * (p.abilityRank || 0)); }
+  abilityPower(): number { return 1 + ABILITY_RANK_POWER * (this.player.abilityRank || 0); }
   dashCooldown(): number { return DASH.cd * (this.player.f.sw_fleet ? 0.75 : 1); }
   useActive(): void {
     const p = this.player;
+    if (this.state !== 'play' || p.hp <= 0 || p.activeCharges <= 0 || p.f.b_silence) return;
     p.activeCharges--;
     if (p.activeCdT <= 0) p.activeCdT = this.activeCooldown();
     // Ability Rank: the ability is cast with extra Might (damage it computes as it is cast)
     const might = p.stats.might;
-    p.stats.might = might * (1 + ABILITY_RANK_POWER * (p.abilityRank || 0));
+    p.stats.might = might * this.abilityPower();
     try { p.char.active.use(this, p); } finally { p.stats.might = might; }
     if (p.f.u_echo) { p.echoUntil = this.time + 4; this.recalc(); }
     this.fx.ring(p.x, p.y, 40, p.char.colors.accent, { thin: true });
@@ -560,7 +576,7 @@ export class Game {
   /** Cast the equipped Soul Art if it is ready. */
   useArt(): boolean {
     const p = this.player, a = this.art;
-    if (!a || this.artCdT > 0 || p.hp <= 0) return false;
+    if (this.state !== 'play' || !a || this.artCdT > 0 || p.hp <= 0) return false;
     this.artCdT = this.artCooldown();
     this.artUses++;
     a.use(this, p, artPower(this.artLevel));
@@ -571,7 +587,7 @@ export class Game {
   evade(): boolean {
     const p = this.player;
     // an ability dash (Inferno Dash, …) in flight keeps its own path
-    if (p.dashCharges <= 0 || p.dashT > 0) return false;
+    if (this.state !== 'play' || p.hp <= 0 || p.dashCharges <= 0 || p.dashT > 0) return false;
     const l = Math.hypot(p.move.x, p.move.y);
     const dx = l > 0.01 ? p.move.x / l : p.face.x, dy = l > 0.01 ? p.move.y / l : p.face.y;
     const ox = p.x, oy = p.y, f = p.f;
@@ -593,10 +609,10 @@ export class Game {
     return true;
   }
   dash(dx: number, dy: number, dist: number, t: number, opts: { onStep?: (x: number, y: number) => void; stepDist?: number } = {}): void { const p = this.player; p.dashT = t; p.dashDx = dx; p.dashDy = dy; p.dashSpeed = dist / t; p.dashOnStep = opts.onStep || null; p.dashStepDist = opts.stepDist || 30; p.dashAcc = 0; }
-  blink(dx: number, dy: number, dist: number): void { const p = this.player; this.fx.burst(p.x, p.y, p.char.colors.accent, 16, { speed: 120, life: 0.4 }); p.x += dx * dist; p.y += dy * dist; this.fx.burst(p.x, p.y, p.char.colors.accent, 16, { speed: 120, life: 0.4 }); }
+  blink(dx: number, dy: number, dist: number): void { const p = this.player; this.fx.burst(p.x, p.y, p.char.colors.accent, 16, { speed: 120, life: 0.4 }); p.x += dx * dist; p.y += dy * dist; p.px = p.x; p.py = p.y; this.fx.burst(p.x, p.y, p.char.colors.accent, 16, { speed: 120, life: 0.4 }); }
   setInvuln(t: number): void { this.player.invulnT = Math.max(this.player.invulnT, t); }
   heal(amt: number, quiet?: boolean, silent?: boolean): void {
-    const p = this.player; if (amt <= 0) return;
+    const p = this.player; if (amt <= 0 || this.state === 'over') return;
     amt *= p.stats.healing;
     const before = p.hp;
     p.hp = Math.min(p.stats.maxHp, p.hp + amt);
@@ -644,7 +660,11 @@ export class Game {
     this.fx.shake(Math.min(8, 2 + dmg * 0.08)); this.fx.text(p.x, p.y - 30, '-' + Math.round(dmg), '#f87171', true); this.sfx('hurt');
     const sx = (src as { x?: number } | null | undefined)?.x, sy = (src as { y?: number } | null | undefined)?.y;
     this.fx.hurt(sx == null || sy == null ? null : Math.atan2(sy - p.y, sx - p.x), Math.min(1, dmg / (p.stats.maxHp * 0.15)));
-    if (this.combo > 0) this.combo = Math.floor(this.combo * 0.75);
+    if (this.combo > 0) {
+      this.combo = Math.floor(this.combo * 0.75);
+      const tier = comboTier(this.combo);
+      if (tier !== this.comboTier) { this.comboTier = tier; this.recalc(); }
+    }
     if (p.hp <= 0) { this.playerDown(); return; }
     const low = p.hp < p.stats.maxHp * 0.3;
     if (low && p.f.b_second && this.secondAt <= this.time) { this.secondAt = this.time + 60; this.addShield(p.stats.maxHp * 0.6, 0.6); this.setInvuln(2); this.fx.ring(p.x, p.y, 120, '#86efac'); this.fx.text(p.x, p.y - 44, 'SECOND WIND', '#86efac'); this.sfx('heal'); }
@@ -854,7 +874,7 @@ export class Game {
   /* ==================== DAMAGE ==================== */
   /** Apply damage (crit, multipliers, hooks, lifesteal, death). Returns the damage dealt. */
   damageEnemy(e: Enemy, dmg: number, info: DamageInfo = {}): number {
-    if (e.dead || e.hp <= 0) return 0;
+    if (this.state === 'over' || e.dead || e.hp <= 0) return 0;
     // map objects: any damage breaks them — no hooks, lifesteal, on-hit effects, statuses or credit
     if (e.object) { if (dmg > 0) this.breakCask(e); return 0; }
     const p = this.player;
@@ -971,7 +991,7 @@ export class Game {
     }
     else if (type === 'bleed') { const cur = st.bleed, dps = Math.min(o.dps ?? 0, e.maxHp * 2); st.bleed = { t: dur, dps: Math.max(dps, cur ? cur.dps : 0), tick: cur ? cur.tick : 0.5 }; }
     else if (type === 'chill') {
-      const power = e.boss ? Math.min(0.7, o.power ?? 0) : o.power ?? 0;
+      const power = U.clamp(o.power ?? 0, 0, e.boss ? 0.7 : 1);
       const cur = st.chill; st.chill = { t: Math.max(dur, cur ? cur.t : 0), p: Math.max(power, cur ? cur.p : 0) };
       if (o.stackFreeze && !o.noStack && !e.boss) { st.chillN = (st.chillN || 0) + 1; if (st.chillN >= o.stackFreeze) { st.chillN = 0; this.applyStatus(e, 'freeze', { dur: 1.5 }); } }
     }
@@ -1228,7 +1248,7 @@ export class Game {
       if (e.boss || e.rush || e.dead || e.escapeT !== undefined) continue;
       const d2 = U.dist2(e.x, e.y, p.x, p.y);
       if (e.immobile) { if (d2 > dropD2) e.dead = true; continue; }
-      if (d2 > maxD2) { const [x, y] = this.spawnPos(); e.x = x; e.y = y; }
+      if (d2 > maxD2) { const [x, y] = this.spawnPos(); e.x = e.px = x; e.y = e.py = y; }
     }
   }
   /** Timed map events: Blood Moon and meteor shower clocks, Ember Casks, the Gilded Hoarder, Hex Totems. */
@@ -1701,15 +1721,25 @@ export class Game {
       const zap = pr.zap; if (zap) { pr.tickT -= dt; if (pr.tickT <= 0) { pr.tickT = zap.cd; const list = this.enemiesInRadius(pr.x, pr.y, zap.r); U.shuffle(list).slice(0, 3).forEach((e) => { this.fx.beam(pr.x, pr.y, e.x, e.y, '#7dd3fc', 2, 0.12); this.damageEnemy(e, zap.dmg, { weapon: pr.weapon, knock: 0.2 }); }); } }
       // collision with enemies
       if (pr.dmg > 0 || pr.statuses) {
-        const hits = this.projHits, n = this.grid.candidates(pr.x, pr.y, pr.r + 64, hits);
+        const endX = pr.x, endY = pr.y, dx = endX - pr.px, dy = endY - pr.py;
+        // Only fast travelling bolts need a swept query. Orbiting weapons follow the champion
+        // through blinks and must not damage everything along that teleport.
+        const sweep = !pr.orbit && dx * dx + dy * dy > 4 * pr.r * pr.r;
+        const hitTime = sweep ? (e: Enemy): number => segmentCircleHit(pr.px, pr.py, dx, dy, e.x, e.y, pr.r + e.r) : null;
+        const hits = this.projHits, n = sweep
+          ? this.grid.candidates((pr.px + endX) / 2, (pr.py + endY) / 2, Math.hypot(dx, dy) / 2 + pr.r + 64, hits)
+          : this.grid.candidates(pr.x, pr.y, pr.r + 64, hits);
+        if (hitTime) hits.sort((a, b) => hitTime(a) - hitTime(b));
         for (let h = 0; h < n && !pr.dead; h++) {
           const e = hits[h]!;
           if (e.dead) continue;
-          const rr = pr.r + e.r, ddx = e.x - pr.x, ddy = e.y - pr.y;
-          if (ddx * ddx + ddy * ddy > rr * rr) continue;
+          const rr = pr.r + e.r, ddx = e.x - endX, ddy = e.y - endY;
+          const contact = hitTime ? hitTime(e) : 1;
+          if (sweep ? !Number.isFinite(contact) : ddx * ddx + ddy * ddy > rr * rr) continue;
           if (pr.hits && pr.hits.has(e.id)) continue;
           if (pr.hitCd) { const k = pr.uid; if ((e.icd[k] || 0) > this.time) continue; e.icd[k] = this.time + pr.hitCd; }
           if (pr.hits) pr.hits.add(e.id);
+          if (sweep) { pr.x = pr.px + dx * contact; pr.y = pr.py + dy * contact; }
           this.damageEnemy(e, pr.dmg, { weapon: pr.weapon, kx: pr.vx || ddx, ky: pr.vy || ddy, knock: pr.knock, crit: pr.crit });
           if (!e.object) { // a cask is only ever struck incidentally: no statuses or on-hit effects (heals, splits…)
             if (pr.statuses) for (const st of pr.statuses) this.applyStatus(e, st.type, st);
@@ -1717,9 +1747,10 @@ export class Game {
           }
           pr.hitCount++;
           if (pr.pierce !== -1 && pr.hitCount > pr.pierce) {
-            if (pr.ricochet > 0) { pr.ricochet--; const t = this.nearestEnemy(pr.x, pr.y, 300, (o) => o !== e && !pr.hits!.has(o.id)); if (t) { pr.angle = Math.atan2(t.y - pr.y, t.x - pr.x); pr.vx = Math.cos(pr.angle) * pr.speed; pr.vy = Math.sin(pr.angle) * pr.speed; pr.hitCount = 0; continue; } }
+            if (pr.ricochet > 0) { pr.ricochet--; const t = this.nearestEnemy(pr.x, pr.y, 300, (o) => o !== e && !pr.hits!.has(o.id)); if (t) { pr.angle = Math.atan2(t.y - pr.y, t.x - pr.x); pr.vx = Math.cos(pr.angle) * pr.speed; pr.vy = Math.sin(pr.angle) * pr.speed; pr.hitCount = 0; break; } }
             pr.dead = true;
           }
+          if (sweep && !pr.dead) { pr.x = endX; pr.y = endY; }
         }
       }
       if (pr.life <= 0 && !pr.dead) { pr.dead = true; if (pr.onExpire) pr.onExpire(this, pr); }
@@ -1732,7 +1763,7 @@ export class Game {
       const pr = this.eprojs[i];
       pr.x += pr.vx * dt; pr.y += pr.vy * dt; pr.life -= dt;
       if (pr.dead || pr.life <= 0) { pr.dead = true; continue; }
-      const rr = pr.r + p.r; if (U.dist2(pr.x, pr.y, p.x, p.y) < rr * rr) { this.hitPlayer(pr.dmg, pr); pr.dead = true; }
+      const rr = pr.r + p.r; if (Number.isFinite(segmentCircleHit(pr.px, pr.py, pr.x - pr.px, pr.y - pr.py, p.x, p.y, rr))) { this.hitPlayer(pr.dmg, pr); pr.dead = true; }
     }
     compact(this.eprojs);
   }
@@ -2093,9 +2124,9 @@ export class Game {
       out.push(b);
     }
     // legendary boons: from tiered Heralds, after the Eclipse, or in Torment III+
-    if (this.legendaryBoonsAllowed() && out.length && rand() < LEGENDARY_BOON_CHANCE) {
+    if (this.legendaryBoonsAllowed() && (!out.length || rand() < LEGENDARY_BOON_CHANCE)) {
       const leg = BOONS.filter((b) => b.rarity === 'legendary' && !own.includes(b.id));
-      if (leg.length) out[Math.floor(rand() * out.length)] = leg[Math.floor(rand() * leg.length)]!;
+      if (leg.length) out[out.length ? Math.floor(rand() * out.length) : 0] = leg[Math.floor(rand() * leg.length)]!;
     }
     return out;
   }
@@ -2125,7 +2156,7 @@ export class Game {
     const mats = { iron: Math.round(this.mats.iron * heatB), dust: Math.round(this.mats.dust * heatB), crystal: this.mats.crystal, star: this.mats.star, eclipse: this.mats.eclipse };
     return {
       charId: p.char.id, stageId: stage.id, seed: this.seed, time: this.time, kills: this.kills, level: p.level, bossKills: this.bossKills, elites: this.elites, evolves: this.evolves, heat: this.heat,
-      gold, embers, charXp, mats, enemyKills: this.enemyKills, bossKillsBy: this.bossKillsBy, dmgByWeapon: this.dmgByWeapon, killsBySource: this.killsBySource,
+      gold, embers, charXp, mats, enemyKills: { ...this.enemyKills }, bossKillsBy: { ...this.bossKillsBy }, dmgByWeapon: { ...this.dmgByWeapon }, killsBySource: { ...this.killsBySource },
       weapons: p.weapons.map((w) => ({ id: w.id, level: w.level, evolved: w.evolved, apex: !!w.apex, dmg: w.dmgDealt })), passives: p.passives.map((x) => ({ id: x.id, level: x.level })), eclipse: this.eclipse,
       killedBy: this.lastHitBy, bestCombo: this.bestCombo, reactions: this.reactions, boons: (p.boons as string[]).slice(), shrines: this.shrinesUsed,
       torment: this.torment, apotheoses: this.apotheoses, abilityRank: p.abilityRank || 0, art: this.art ? this.art.id : null, artUses: this.artUses,

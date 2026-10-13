@@ -99,10 +99,12 @@ export class Narrator {
       case 'bossPhase':
         if (ref) this.say(ref, pick(BOSS_LINES[ref]?.phase), true);
         break;
-      case 'bossDown':
+      case 'bossDown': {
         if (ref) this.say(ref, pick(BOSS_LINES[ref]?.death), true);
-        this.say(Math.random() < 0.6 ? charId : 'keeper', Math.random() < 0.6 ? pick(ch?.bossDown) : keeper('bossDown'), true);
+        const champion = Math.random() < 0.6;
+        this.say(champion ? charId : 'keeper', champion ? pick(ch?.bossDown) : keeper('bossDown'), true);
         break;
+      }
       case 'eclipse':
         this.say('keeper', keeper('eclipse'), true);
         this.say(charId, pick(ch?.eclipse), true);
@@ -111,9 +113,11 @@ export class Narrator {
         if (Math.random() < 0.6) this.say(charId, pick(ch?.evolve), false);
         else this.say('keeper', keeper('evolve'), false);
         break;
-      case 'lowHp':
-        this.say(Math.random() < 0.65 ? charId : 'keeper', Math.random() < 0.65 ? pick(ch?.lowHp) : keeper('lowHp'), false);
+      case 'lowHp': {
+        const champion = Math.random() < 0.65;
+        this.say(champion ? charId : 'keeper', champion ? pick(ch?.lowHp) : keeper('lowHp'), false);
         break;
+      }
       case 'revive':
         this.say(charId, pick(ch?.revive), true);
         break;

@@ -118,11 +118,13 @@ function bolt(color: string, len: number, wid: number, kind = 'bolt'): Sprite {
   const pad = wid * 2.5, W = len + pad * 2, H = wid * 2 + pad * 2;
   const [c, x] = mkRes(W, H);
   const cx = W / 2, cy = H / 2;
-  x.globalCompositeOperation = 'lighter';
-  x.drawImage(glow(color, Math.max(len, wid) * 0.7), cx - Math.max(len, wid) * 0.7, cy - Math.max(len, wid) * 0.7);
-  x.globalCompositeOperation = 'source-over';
+  // The silhouette scales with area; its baked halo stays small and faint.
+  const halo = Math.min(32, Math.max(len, wid) * 0.7);
+  x.globalCompositeOperation = 'lighter'; x.globalAlpha = 0.25;
+  x.drawImage(glow(color, halo), cx - halo, cy - halo);
+  x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
   x.translate(cx, cy);
-  x.shadowColor = color; x.shadowBlur = wid * 1.5;
+  x.shadowColor = color; x.shadowBlur = Math.min(5, wid * 0.6);
   if (kind === 'bolt') {
     const g = x.createLinearGradient(-len / 2, 0, len / 2, 0);
     g.addColorStop(0, U.rgba(color, 0)); g.addColorStop(0.6, color); g.addColorStop(1, '#fff');

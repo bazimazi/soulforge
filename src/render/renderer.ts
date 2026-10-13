@@ -137,16 +137,18 @@ function makeSprite(w: number, h: number, ox: number, oy: number, draw: (x: Canv
 
 const easeOut = (k: number) => 1 - (1 - k) * (1 - k);
 /** Brightness falloff for big effects: past `ref` world units an effect dims, so a late-game blast never whites out the field. */
-const sizeFade = (r: number, ref = 90) => (r > ref ? Math.sqrt(ref / r) : 1);
+const sizeFade = (r: number, ref = 90) => (r > ref ? ref / r : 1);
 /** Additive effects stack: dim each one as the live count passes `n`. */
-const crowdFade = (count: number, n: number) => (count > n ? Math.sqrt(n / count) : 1);
+const crowdFade = (count: number, n: number) => (count > n ? n / count : 1);
 /** Light radius for an effect of gameplay radius `r`: grows sub-linearly so huge areas don't light the whole screen. */
-const softR = (r: number) => (r > 80 ? 80 + (r - 80) * 0.55 : r);
+const softR = (r: number) => (r > 80 ? Math.min(160, 80 + (r - 80) * 0.25) : r);
 
 export class Renderer {
   readonly backend: Backend;
   readonly fx: FX;
   quality = 1;
+  /** Shared decorative brightness budget across simultaneous spell families. */
+  private spellOpacity = 0.6;
   /** Bloom & colour grading (WebGL2 only; Settings → Post-processing). */
   postEnabled = true;
   private post: PostFX = {
@@ -346,6 +348,13 @@ export class Renderer {
       y0 = this.cam.y - vh,
       x1 = this.cam.x + vw,
       y1 = this.cam.y + vh;
+    const fx = this.fx;
+    const load =
+      g.projs.length / 30 +
+      g.zones.length / 5 +
+      (fx.explosions.length + fx.novas.length + fx.bolts.length) / 6 +
+      (fx.beams.length + fx.arcs.length + fx.lines.length + fx.whips.length + fx.meteors.length) / 12;
+    this.spellOpacity = (0.6 * fx.intensity) / Math.max(1, Math.sqrt(load));
     this.drawGround(x0, y0, x1, y1);
     this.drawDetails(g.time, x0, y0, x1, y1);
     this.drawDecals(x0, y0, x1, y1);
@@ -362,12 +371,15 @@ export class Renderer {
     this.drawPickups(g, a, x0, y0, x1, y1);
     this.drawSorted(g, a, ppx, ppy);
     this.drawGroundParticles();
-    this.drawEnemyProjectiles(g, a);
+    for (const pr of g.eprojs) {
+      if (this.lightCols.length < 360) this.light(pr.x, pr.y, 60, 0.45, pr.color);
+    }
     this.drawProjectiles(g, a);
     this.drawFog(g, x0, y0, x1, y1);
     this.drawLighting(g);
     B.setView(z, 0, 0, z, tx, ty);
     this.drawAdditive(g, a, ppx, ppy);
+    this.drawEnemyProjectiles(g, a);
     this.drawTexts();
     this.drawPlayerBars(g, ppx, ppy);
     B.setView(1, 0, 0, 1, 0, 0);
@@ -590,30 +602,31 @@ export class Renderer {
     const B = this.backend,
       t = g.time;
     // late game stacks many pools at once (Sanctified Deluge, fire trails, spore clouds): each dims as they pile up
-    const crowd = crowdFade(g.zones.length, 5) * this.fx.intensity;
+    const crowd = crowdFade(g.zones.length, 5) * this.spellOpacity;
     for (const z of g.zones) {
       const life = Math.max(0, Math.min(1, z.age * 4, (z.dur - z.age) * 2)),
         fade = life * crowd * sizeFade(z.r, 110);
       if (z.kind === 'blackhole') {
-        B.radial(z.x, z.y, z.r, '#000', life, '#0a0019', 0.95 * life, 0.55);
+        B.radial(z.x, z.y, z.r, '#000', 0.28 * fade, '#0a0019', 0.22 * fade, 0.55);
         B.ring(z.x, z.y, z.r * 0.85, z.r * 0.85, 0, z.r * 0.25, z.color, 0.4 * fade, 1.5);
-        B.ring(z.x, z.y, z.r * 1.05, z.r * 0.35, t * 2, 2, z.color, 0.8 * life);
+        B.ring(z.x, z.y, z.r * 1.05, z.r * 0.35, t * 2, 2, z.color, 0.35 * life * Math.sqrt(crowd));
         // matter spiralling in
         if (this.dt > 0 && Math.random() < 0.6) {
           const an = Math.random() * TAU;
           this.fx.trail(z.x + Math.cos(an) * z.r * 1.3, z.y + Math.sin(an) * z.r * 1.3, z.color, 3);
         }
-        this.light(z.x, z.y, softR(z.r) * 1.4, 0.45 * life * this.fx.intensity, z.color);
+        this.light(z.x, z.y, softR(z.r) * 1.4, 0.25 * fade, z.color);
       } else if (z.kind === 'laser') {
-        const I = this.fx.intensity;
-        B.radial(z.x, z.y, z.r, '#fff', 0.75 * life * I, z.color, 0.55 * life * I, 0.4);
-        this.light(z.x, z.y, z.r * 2, 0.75 * I, z.color);
+        const I = fade;
+        B.radial(z.x, z.y, z.r, z.color, 0.18 * I, z.color, 0.12 * I, 0.4);
+        B.ring(z.x, z.y, z.r, z.r, 0, 1.5, z.color, 0.4 * life * Math.sqrt(crowd));
+        this.light(z.x, z.y, softR(z.r), 0.3 * I, z.color);
       } else {
         const pulse = 0.85 + Math.sin(t * 6 + z.x) * 0.15;
         B.radial(z.x, z.y, z.r, z.color, 0.28 * pulse * fade, z.color, 0.16 * fade, 0.7);
         const rr = z.r * (0.95 + Math.sin(t * 4) * 0.03);
         // the rim stays crisp so the pool's reach is always readable, however faint its fill
-        B.ring(z.x, z.y, rr, rr, 0, 1.5, z.color, 0.45 * pulse * life);
+        B.ring(z.x, z.y, rr, rr, 0, 1.5, z.color, 0.4 * pulse * life * Math.sqrt(crowd));
         if (z.kind === 'fire' && this.dt > 0 && Math.random() < 0.6 * crowd)
           this.fx.burst(z.x + U.lerp(-z.r, z.r, Math.random()) * 0.8, z.y + U.lerp(-z.r, z.r, Math.random()) * 0.8, '#ff9a3c', 1, {
             speed: 20,
@@ -627,14 +640,15 @@ export class Renderer {
   }
 
   private drawMines(g: Game): void {
-    const B = this.backend;
+    const B = this.backend,
+      I = this.spellOpacity;
     for (const m of g.mines) {
       const pulse = 0.5 + Math.sin(g.time * 6 + m.pulse) * 0.5;
-      B.glow(m.x, m.y, 14, m.color, 1);
+      B.glow(m.x, m.y, 14, m.color, I);
       B.circle(m.x, m.y, 7, '#223', 1);
-      B.circle(m.x, m.y, 3.5, m.color, 0.5 + pulse * 0.5);
-      if (m.armT <= 0) B.ring(m.x, m.y, m.r * 0.45, m.r * 0.45, 0, 1, m.color, 0.15 + pulse * 0.15);
-      this.light(m.x, m.y, 50, 0.4 + pulse * 0.3, m.color);
+      B.circle(m.x, m.y, 3.5, m.color, (0.5 + pulse * 0.5) * Math.sqrt(I));
+      if (m.armT <= 0) B.ring(m.x, m.y, m.r * 0.45, m.r * 0.45, 0, 1, m.color, (0.15 + pulse * 0.15) * Math.sqrt(I));
+      this.light(m.x, m.y, 50, (0.4 + pulse * 0.3) * I, m.color);
     }
   }
 
@@ -1316,7 +1330,7 @@ export class Renderer {
     for (let i = 0; i < P.count; i++) {
       const f = P.flags[i]!;
       if (f & PF.GLOW) continue;
-      const k = P.life[i]! / P.max[i]!;
+      const k = (P.life[i]! / P.max[i]!) * Math.sqrt(this.fx.intensity) * crowdFade(P.count, 900);
       if (f & PF.DEBRIS) {
         const z = P.z[i]!,
           a = Math.min(1, k * 3.5);
@@ -1331,7 +1345,6 @@ export class Renderer {
       const x = pr.px + (pr.x - pr.px) * a,
         y = pr.py + (pr.y - pr.py) * a;
       this.backend.image(S.orb(pr.color, 5) as Img, x, y);
-      if (this.lightCols.length < 360) this.light(x, y, 60, 0.45, pr.color);
     }
   }
 
@@ -1349,41 +1362,43 @@ export class Renderer {
   }
 
   private drawProjectiles(g: Game, a: number): void {
-    const B = this.backend;
+    const B = this.backend,
+      I = this.spellOpacity;
     for (const pr of g.projs) {
       const sp = pr.sprite;
       if (!sp) continue;
       const x = pr.px + (pr.x - pr.px) * a,
         y = pr.py + (pr.y - pr.py) * a;
-      const color = sp.color ?? '#fff';
-      if (sp.kind === 'orb') B.image(S.orb(color, sp.size || 6) as Img, x, y, { sx: 1 + Math.sin(pr.age * 20) * 0.08 });
+      const color = sp.color ?? '#fff',
+        core = Math.max(0.06, (0.1 + Math.sqrt(I) * 0.7) * sizeFade(pr.r, 32));
+      if (sp.kind === 'orb') B.image(S.orb(color, sp.size || 6) as Img, x, y, { alpha: core, sx: 1 + Math.sin(pr.age * 20) * 0.08 });
       else if (sp.kind === 'void') {
         const r = sp.size || 14;
-        B.radial(x, y, r * 2, '#000', 1, '#140028', 0.9, 0.5);
-        B.ring(x, y, r * 1.6, r * 1.6, 0, r * 0.6, color, 0.5, 1.5);
-        B.ring(x, y, r * 1.4, r * 0.5, pr.age * 3, 2, color, 0.9);
+        B.radial(x, y, r * 2, '#000', 0.3 * I, '#140028', 0.2 * I, 0.5);
+        B.ring(x, y, r * 1.6, r * 1.6, 0, r * 0.6, color, 0.3 * I, 1.5);
+        B.ring(x, y, r * 1.4, r * 0.5, pr.age * 3, 2, color, core);
       } else if (sp.kind === 'wave') {
         const s = sp.size ?? 10,
           ca = Math.cos(pr.angle),
           sa = Math.sin(pr.angle);
         B.setBlend('add');
-        B.arc(x - ca * s, y - sa * s, s * 1.3, pr.angle, 1.1, 10, color, 0.35);
+        B.arc(x - ca * s, y - sa * s, s * 1.3, pr.angle, 1.1, 10, color, 0.25 * I);
         B.setBlend('normal');
-        B.arc(x - ca * s, y - sa * s, s * 1.3, pr.angle, 1.1, 4, color, 0.85);
-        B.arc(x - ca * s * 0.7, y - sa * s * 0.7, s, pr.angle, 0.9, 2, '#fff', 1);
+        B.arc(x - ca * s, y - sa * s, s * 1.3, pr.angle, 1.1, 4, color, core);
+        B.arc(x - ca * s * 0.7, y - sa * s * 0.7, s, pr.angle, 0.9, 2, '#fff', core);
       } else if (sp.kind === 'tornado') {
         const s = sp.size ?? 16;
         for (let i = 0; i < 4; i++) {
           const w = s * (0.4 + i * 0.25);
-          B.ring(x + Math.sin(pr.rot + i) * 4, y - i * s * 0.35 + s * 0.4, w, w * 0.35, 0, 3, color, 0.8);
+          B.ring(x + Math.sin(pr.rot + i) * 4, y - i * s * 0.35 + s * 0.4, w, w * 0.35, 0, 3, color, core);
         }
-      } else if (sp.kind === 'spike') B.image(this.spikeSprite(), x, y);
+      } else if (sp.kind === 'spike') B.image(this.spikeSprite(), x, y, { alpha: core });
       else {
         const b = sp as { len?: number; wid?: number };
-        B.image(S.bolt(color, b.len || 20, b.wid || 5, sp.kind) as Img, x, y, { rot: pr.angle + pr.rot });
+        B.image(S.bolt(color, b.len || 20, b.wid || 5, sp.kind) as Img, x, y, { rot: pr.angle + pr.rot, alpha: core });
       }
-      if (pr.light) this.light(x, y, pr.light, 0.6 * this.fx.intensity, color);
-      else if (this.lightCols.length < 300) this.light(x, y, 45, 0.4 * this.fx.intensity, color);
+      if (pr.light) this.light(x, y, softR(pr.light), 0.4 * I, color);
+      else if (this.lightCols.length < 300) this.light(x, y, 45, 0.25 * I, color);
     }
   }
 
@@ -1400,7 +1415,7 @@ export class Renderer {
     B.beginLights(m ? `rgba(${m[0]},${m[1]},${m[2]},${darkA})` : amb, 0.25);
     for (let i = 0, j = 0; i < L.length; i += 4, j++) B.light(L[i]!, L[i + 1]!, L[i + 2]!, L[i + 3]! * eclipse, C[j] ?? lantern);
     const fx = this.fx,
-      I = fx.intensity,
+      I = this.spellOpacity,
       exK = crowdFade(fx.explosions.length, 6) * I,
       flK = crowdFade(fx.flashLights.length, 10) * I,
       nvK = crowdFade(fx.novas.length, 4) * I;
@@ -1418,7 +1433,8 @@ export class Renderer {
     for (let i = 0; i < P.count; i++) {
       const f = P.flags[i]!;
       if (!(f & PF.GLOW)) continue;
-      const k = f & PF.AMBIENT ? Math.sin((P.life[i]! / P.max[i]!) * Math.PI) * 0.8 : P.life[i]! / P.max[i]!;
+      const fade = crowdFade(P.count, 650) * this.spellOpacity;
+      const k = (f & PF.AMBIENT ? Math.sin((P.life[i]! / P.max[i]!) * Math.PI) * 0.6 : P.life[i]! / P.max[i]!) * fade;
       if (f & (PF.STREAK | PF.SOUL)) {
         const x = P.x[i]!,
           y = P.y[i]!,
@@ -1442,7 +1458,7 @@ export class Renderer {
   /** Tapered ribbons behind moving projectiles, from a short history of interpolated positions. */
   private drawRibbons(g: Game, a: number): void {
     const B = this.backend;
-    let budget = 500;
+    let budget = Math.ceil(180 * this.fx.intensity);
     for (const pr of g.projs) {
       const sp = pr.sprite;
       if (!sp || sp.kind === 'void' || sp.kind === 'tornado' || sp.kind === 'wave' || sp.kind === 'spike' || pr.field) continue;
@@ -1473,7 +1489,7 @@ export class Renderer {
           qx = rb[idx]!,
           qy = rb[idx + 1]!;
         const k = 1 - i / n;
-        B.line(px, py, qx, qy, w * k, color, 0.4 * k, 1.5);
+        B.line(px, py, qx, qy, Math.min(8, w) * k, color, 0.25 * k * this.spellOpacity, 1.5);
         px = qx;
         py = qy;
       }
@@ -1485,7 +1501,7 @@ export class Renderer {
       fx = this.fx,
       t = g.time,
       // the player's spell-intensity setting scales every spell visual below (not enemy telegraphs)
-      I = fx.intensity;
+      I = this.spellOpacity;
     B.setBlend('add');
     if (this.quality >= 0.5) this.drawRibbons(g, a);
     this.drawParticles();
@@ -1630,17 +1646,18 @@ export class Renderer {
       const k = lb.t / lb.max,
         x = U.lerp(lb.x, lb.tx, k),
         y = U.lerp(lb.y, lb.ty, k) - Math.sin(k * Math.PI) * 90;
-      B.image(S.orb(lb.color, 6) as Img, x, y);
+      B.image(S.orb(lb.color, 6) as Img, x, y, { alpha: 0.2 + Math.sqrt(I) * 0.6 });
       if (this.dt > 0) fx.trail(x, y, lb.color, 4);
     }
     for (const m of fx.meteors) {
       const k = m.t / m.max,
         y = m.y - (1 - k) * 600;
-      if (m.small) B.image(S.bolt(m.color || '#fde047', 18, 3, 'arrow') as Img, m.x, y, { rot: Math.PI / 2 });
+      if (m.small)
+        B.image(S.bolt(m.color || '#fde047', 18, 3, 'arrow') as Img, m.x, y, { rot: Math.PI / 2, alpha: 0.2 + Math.sqrt(I) * 0.6 });
       else {
         const mx = m.x + (1 - k) * 120;
-        B.line(mx + 60, y - 300, mx, y, 22, '#ff7043', 0.35, 1.5, '#ffd08a', 0.8);
-        B.image(S.orb('#ff7043', 14) as Img, mx, y);
+        B.line(mx + 60, y - 300, mx, y, 12, '#ff7043', 0.22 * I, 1.5, '#ffd08a', 0.4 * I);
+        B.image(S.orb('#ff7043', 14) as Img, mx, y, { alpha: 0.2 + Math.sqrt(I) * 0.6 });
         if (this.dt > 0) fx.trail(mx, y, '#ff9a3c', 8);
       }
     }
@@ -1674,14 +1691,14 @@ export class Renderer {
             y2 = ppy + Math.sin(an) * w.len;
           B.line(ppx, ppy, x2, y2, 22, '#fbbf24', 0.22 * I, 1.5, '#fbbf24', 0);
           B.line(ppx, ppy, x2, y2, 9, w.evolved ? '#fb923c' : '#fbbf24', 0.6 * I, 0, '#fbbf24', 0);
-          B.line(ppx, ppy, x2, y2, 3, '#fff', 0.6 * Math.sqrt(I), 0, '#fff', 0.15);
+          B.line(ppx, ppy, x2, y2, 3, '#fff', 0.5 * Math.sqrt(I), 0, '#fff', 0.1 * I);
         }
       }
       if (w.id === 'plague_aura' && w.radius) {
         const r = w.radius;
-        B.radial(ppx, ppy, r, w.evolved ? '#84cc16' : '#a3e635', 0.02, '#a3e635', 0.11 * sizeFade(r, 140) * I, 0.8, 0.3);
+        B.radial(ppx, ppy, r, w.evolved ? '#84cc16' : '#a3e635', 0.02 * I, '#a3e635', 0.11 * sizeFade(r, 140) * I, 0.8, 0.3);
         const rr = r * (0.98 + Math.sin(t * 3) * 0.02);
-        B.ring(ppx, ppy, rr, rr, 0, 2, 'rgb(163,230,53)', 0.35);
+        B.ring(ppx, ppy, rr, rr, 0, 2, 'rgb(163,230,53)', 0.35 * Math.sqrt(I));
       }
     }
     if (p.feastT > 0) B.ring(ppx, ppy, 245, 245, 0, 3, 'rgb(239,68,68)', 0.5);
@@ -1759,7 +1776,7 @@ export class Renderer {
       else B.arc(W / 2, H / 2, R2, this.fx.hurtAng, 0.55, 26 * this.dpr, '#ef4444', ha * 0.55);
     }
     if (g.eclipse) B.rect(0, 0, W, H, 'rgb(80,0,120)', 0.07);
-    if (this.fx.flashA > 0) B.rect(0, 0, W, H, this.fx.flashCol, this.fx.flashA * 0.7);
+    if (this.fx.flashA > 0) B.rect(0, 0, W, H, this.fx.flashCol, Math.min(0.18, this.fx.flashA * 0.35) * this.fx.intensity);
   }
 
   /** Per-frame grading: stage split-tone, hit aberration, low-health red wash, eclipse purple, shockwaves. */
@@ -1770,7 +1787,7 @@ export class Renderer {
       hpk = p.hp / p.stats.maxHp;
     P.time = g.time;
     P.aberration = (this.fx.hurtA * 4 + (g.boss && g.boss.phase === 2 ? 1.2 : 0)) * this.dpr;
-    P.bloom = this.quality < 0.7 ? 0.6 : 0.85;
+    P.bloom = (this.quality < 0.7 ? 0.35 : 0.5) * Math.sqrt(this.spellOpacity);
     P.threshold = 0.58;
     if (hpk < 0.3) {
       P.tint = '#7f0000';

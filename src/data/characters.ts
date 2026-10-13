@@ -151,7 +151,7 @@ CHARS.push({
   active: { name: 'Thunderstorm', icon: { g: 'bolt', c: '#7dd3fc' }, cd: 14, desc: 'For 5 seconds, lightning hammers random enemies around you three times a second.',
     use(g, p) {
       const dur = p.f.skyfall ? 7.5 : 5, rate = p.f.skyfall ? 0.16 : 0.33;
-      p.stormT = dur; p.stormRate = rate; p.stormTick = 0;
+      p.stormT = dur; p.stormRate = rate; p.stormTick = 0; p.stormPower = g.abilityPower();
       g.sfx('thunder');
     } },
   hooks: {
@@ -171,7 +171,7 @@ CHARS.push({
         if (p.stormTick <= 0) {
           p.stormTick = p.stormRate;
           const e = g.randomEnemyNear(p.x, p.y, 420);
-          if (e) g.lightning(e.x, e.y, 52, (20 + p.level * 3) * p.stats.might, { def: WEAPONS.chain_lightning, id: 'chain_lightning', ability: true }, {});
+          if (e) g.lightning(e.x, e.y, 52, (20 + p.level * 3) * p.stats.might * (p.stormPower ?? 1), { def: WEAPONS.chain_lightning, id: 'chain_lightning', ability: true }, {});
         }
         if (p.f.eye_storm) { p.dyn.speed = 0.5; p.dyn.dmgTaken = 0.7; }
       } else { p.dyn.speed = 0; p.dyn.dmgTaken = 1; }
@@ -518,7 +518,8 @@ CHARS.push({
   trait: { name: 'Soul Harvest', desc: 'Every kill grants a Soul (max 100). Each Soul gives +0.4% Might. Souls fade when you stop killing.' },
   active: { name: 'Army of the Night', icon: { g: 'ghost', c: '#86efac' }, cd: 20, desc: 'Summon 8 wraiths for 8 seconds that tear through the horde.',
     use(g, p) {
-      for (let i = 0; i < 8; i++) { const a = i * U.TAU / 8; g.spawnAlly({ kind: 'wraith', x: p.x + Math.cos(a) * 50, y: p.y + Math.sin(a) * 50, dmg: () => (20 + p.level * 3) * p.stats.might * (1 + p.stats.minionDmg), life: 8, speed: 380, sprite: 'wraith', color: '#86efac', weapon: { id: 'skill', ability: true } }); }
+      const power = g.abilityPower();
+      for (let i = 0; i < 8; i++) { const a = i * U.TAU / 8; g.spawnAlly({ kind: 'wraith', x: p.x + Math.cos(a) * 50, y: p.y + Math.sin(a) * 50, dmg: () => (20 + p.level * 3) * p.stats.might * power * (1 + p.stats.minionDmg), life: 8, speed: 380, sprite: 'wraith', color: '#86efac', weapon: { id: 'skill', ability: true } }); }
       g.sfx('summon'); g.fx.flash('#86efac', 0.12);
     } },
   hooks: {
@@ -777,7 +778,8 @@ CHARS.push({
       const e = g.randomEnemyNear(p.x, p.y, 360);
       const tx = e ? e.x : p.x + p.face.x * 160, ty = e ? e.y : p.y + p.face.y * 160;
       const w = { def: WEAPONS.void_orb, id: 'void_orb', ability: true };
-      g.spawnZone({ x: tx, y: ty, r: 165 * p.stats.area, dur: 4, dmg: (15 + p.level * 2.5) * p.stats.might * 0.2, tick: 0.2, weapon: w, color: '#c084fc', kind: 'blackhole', pull: 230, onEnd: p.f.oblivion ? (z) => g.explode(z.x, z.y, 210, (120 + p.level * 12) * p.stats.might, w, { color: '#e879f9' }) : undefined });
+      const power = g.abilityPower();
+      g.spawnZone({ x: tx, y: ty, r: 165 * p.stats.area, dur: 4, dmg: (15 + p.level * 2.5) * p.stats.might * 0.2, tick: 0.2, weapon: w, color: '#c084fc', kind: 'blackhole', pull: 230, onEnd: p.f.oblivion ? (z) => g.explode(z.x, z.y, 210, (120 + p.level * 12) * p.stats.might * power, w, { color: '#e879f9' }) : undefined });
       g.sfx('active');
     } },
   hooks: {
@@ -936,7 +938,7 @@ CHARS.push({
   active: { name: 'Crimson Feast', icon: { g: 'fang', c: '#ef4444' }, cd: 15, desc: 'Costs 15% of your current health. For 3 seconds, drain every enemy nearby and heal for half the damage dealt.',
     use(g, p) {
       p.hp = Math.max(1, p.hp - p.hp * 0.15);
-      p.feastT = 3; p.feastTick = 0;
+      p.feastT = 3; p.feastTick = 0; p.feastPower = g.abilityPower();
       g.sfx('active');
     } },
   hooks: {
@@ -955,7 +957,7 @@ CHARS.push({
         p.feastT -= dt; p.feastTick -= dt;
         if (p.feastTick <= 0) {
           p.feastTick = 0.2;
-          let total = 0; const dmg = (10 + p.level * 1.5) * p.stats.might;
+          let total = 0; const dmg = (10 + p.level * 1.5) * p.stats.might * (p.feastPower ?? 1);
           g.eachEnemyIn(p.x, p.y, 245, (e) => { const before = e.object ? 0 : e.hp; g.damageEnemy(e, dmg, { weapon: { def: WEAPONS.blood_nova, id: 'blood_nova', ability: true }, quiet: true }); total += Math.min(before, dmg); g.fx.beam(e.x, e.y, p.x, p.y, '#ef4444', 2, 0.15); });
           if (total > 0) g.heal(Math.min(total * 0.5, p.stats.maxHp * 0.08), true);
         }
@@ -1033,7 +1035,7 @@ CHARS.push({
   resource: { name: 'Flow', color: '#5eead4', max: 50 },
   trait: { name: 'Flow State', desc: 'Moving builds Flow (max 50): +1% Might and +0.4% speed per stack. Flow fades when you stand still. Dodging grants 10 Flow and a counter-gale.' },
   active: { name: 'Cyclone', icon: { g: 'tornado', c: '#5eead4' }, cd: 10, desc: 'Become a whirlwind for 3 seconds: invulnerable, 40% faster, shredding and hurling everything you touch.',
-    use(g, p) { p.cycloneT = 3; p.cycTick = 0; g.setInvuln(3.05); g.sfx('active'); } },
+    use(g, p) { p.cycloneT = 3; p.cycTick = 0; p.cyclonePower = g.abilityPower(); g.setInvuln(3.05); g.sfx('active'); } },
   hooks: {
     init(g, p) { p.res = 0; p.resMax = 50; },
     update(g, p, dt) {
@@ -1046,8 +1048,8 @@ CHARS.push({
         p.cycloneT -= dt; p.cycTick -= dt;
         const w = { def: WEAPONS.tempest_palm, id: 'tempest_palm', ability: true };
         if (p.f.tornado_kick) g.pullEnemies(p.x, p.y, 200, 140);
-        if (p.cycTick <= 0) { p.cycTick = 0.15; g.eachEnemyIn(p.x, p.y, 105, (e) => g.damageEnemy(e, (8 + p.level * 1.2) * p.stats.might, { weapon: w, quiet: true, kx: e.x - p.x, ky: e.y - p.y, knock: 1.5 })); g.fx.ring(p.x, p.y, 100, '#5eead4', { thin: true }); }
-        if (p.cycloneT <= 0 && p.f.tornado_kick) g.explode(p.x, p.y, 185, (60 + p.level * 8) * p.stats.might, w, { color: '#5eead4' });
+        if (p.cycTick <= 0) { p.cycTick = 0.15; g.eachEnemyIn(p.x, p.y, 105, (e) => g.damageEnemy(e, (8 + p.level * 1.2) * p.stats.might * (p.cyclonePower ?? 1), { weapon: w, quiet: true, kx: e.x - p.x, ky: e.y - p.y, knock: 1.5 })); g.fx.ring(p.x, p.y, 100, '#5eead4', { thin: true }); }
+        if (p.cycloneT <= 0 && p.f.tornado_kick) g.explode(p.x, p.y, 185, (60 + p.level * 8) * p.stats.might * (p.cyclonePower ?? 1), w, { color: '#5eead4' });
       }
       if (p.f.wind_incarnate) p.auraColor = '#5eead4';
     },

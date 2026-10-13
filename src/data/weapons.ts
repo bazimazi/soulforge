@@ -228,6 +228,7 @@ registerWeapon({
           g.spawnProj({
             x: p.x, y: p.y, angle: a, speed: s.speed, r: 9, dmg: s.dmg, pierce: 0, life: s.duration, weapon: w,
             sprite: { kind: 'orb', color: '#ff7043', size: 8 }, trail: '#ff7043', light: 60,
+            statuses: [{ type: 'burn', dur: 3, dps: s.dmg * s.burn }],
             onHit: (g2: Game, pr: Projectile, e: Enemy) => g2.explode(pr.x, pr.y, 62 * s.area, s.dmg, w, { burn: s.burn, burnDur: 3, color: '#ff7043', exclude: e }),
             onExpire: (g2: Game, pr: Projectile) => g2.explode(pr.x, pr.y, 62 * s.area, s.dmg, w, { burn: s.burn, burnDur: 3, color: '#ff7043' }),
           });
@@ -612,9 +613,8 @@ export const weaponStats = function (w: Weapon, p: Player): WeaponStats {
   s.speed *= st.projSpeed;
   s.duration *= st.duration;
   s.amount += st.amount;
-  s.knock *= 1 + (st.knockback || 0);
+  // Global knockback and burn bonuses are applied once when a hit/status lands.
   if (s.pierce >= 0) s.pierce += st.pierce || 0;
-  if (def.tags && def.tags.includes('fire')) s.burn *= 1 + (st.burnDmg || 0);
   if (def.tags && def.tags.includes('ice')) s.slow *= 1 + (st.slowPower || 0);
   return s;
 };
