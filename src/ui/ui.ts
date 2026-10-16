@@ -16,7 +16,7 @@ import { WEAPONS, WH } from '../data/weapons';
 import { ABILITY_RANK_CD, ABILITY_RANK_MAX, ABILITY_RANK_POWER, ASCENSIONS, OVERDRIVE_NAMES, OVERFLOW_VALUE, TORMENT_MAX, applyTorment, overdriveDesc, tormentReward } from '../data/progression';
 import { ART_BY_ID } from '../data/soularts';
 import type { Game } from '../game/game';
-import type { BoonDef, Chapter, ChestReward, DifficultyMods, Enemy, EnemyDef, IconSpec, LevelOption, RunSummary } from '../game/types';
+import type { BoonDef, Chapter, CharacterDef, ChestReward, DifficultyMods, Enemy, EnemyDef, IconSpec, LevelOption, RunSummary } from '../game/types';
 import { Save } from '../meta/save';
 import type { FX } from '../render/fx';
 import { Sprites as S } from '../render/sprites';
@@ -25,11 +25,17 @@ import { $, $$, BTN, esc, ic, roman } from './dom';
 import { contractsReady, fmtReward, showAscension, soulRankHtml, type AscTab } from './progression';
 import { MapView } from './minimap';
 import { Narrator } from './narrator';
+import { ChampionPreview } from './champion-preview';
+import { stagePreview } from './stage-preview';
+import { RIFT_DEFS, RIFT_RELICS, type RiftRelic } from '../data/rifts';
+import { WARD_TIME, RIFT_CHANNEL } from '../game/rifts';
+import type { HeroAction } from '../render/hero-animation';
 
 /** The slice of the renderer the UI needs (settings screen). */
 export interface RendererLike {
   quality: number;
   postEnabled: boolean;
+  reducedMotion: boolean;
   resize(): void;
   fx: FX;
 }
@@ -177,6 +183,10 @@ class UiController {
   private lvlKeys: KeyHandler | null = null;
   private claims: Record<string, [string, Reward]> = {};
   private modalFocus: HTMLElement | null = null;
+  private preview: ChampionPreview | null = null;
+  private riftHud: { root: HudSlot; name: HudSlot; detail: HudSlot; progress: HudSlot; relics: HTMLElement } | null = null;
+  private shownRelics = '';
+  private blockedChoiceSpace = false;
 
   init({ game, renderer, input }: UiDeps): void {
     this.game = game; this.R = renderer; this.input = input;
@@ -191,12 +201,25 @@ class UiController {
     game.events.on('levelUp', (options) => this.showLevelUp(options));
     game.events.on('chest', (rewards, boss) => this.showChest(rewards, boss));
     game.events.on('boon', (options) => this.showBoon(options));
+    game.events.on('relic', (options) => this.showRelic(options));
     game.events.on('gameOver', (summary) => { setTimeout(() => this.showGameOver(summary), GAME_OVER_DELAY_MS); });
     game.events.on('notice', (text, color, dur) => this.notice(text, color, dur));
     game.events.on('runStart', () => { this.map?.reset(); this.meter?.reset(); });
     input.onMapKey = () => { if (this.game.state === 'play') this.map?.toggle(); };
     input.onMeterKey = () => { if (this.game.state === 'play') this.meter?.toggle(); };
     this.showTitle();
+    // A dash can overlap the level-up frame. Block both native button keyup clicks and our
+    // role-button keydown activation, including repeats and a release after another key picks.
+    const blockChoiceSpace = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      if (this.game.state !== 'levelup' && !this.blockedChoiceSpace) return;
+      this.blockedChoiceSpace = e.type === 'keydown';
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      this.input.flush();
+    };
+    window.addEventListener('keydown', blockChoiceSpace, true);
+    window.addEventListener('keyup', blockChoiceSpace, true);
     document.addEventListener('keydown', (e) => {
       const modal = $('modal');
       if (e.key === 'Tab' && !modal.classList.contains('hidden')) {
@@ -212,7 +235,7 @@ class UiController {
       }
     });
     // Keyboard activation for clickable cards/rows rendered as role="button". On `window` (registered
-    // after InputManager's listener) so a SPACE that picks a level-up card is flushed, not cast.
+    // after InputManager's listener) so menu activations flush queued gameplay input.
     window.addEventListener('keydown', (e) => {
       const t = e.target;
       if (!e.repeat && (e.key === 'Enter' || e.key === ' ') && t instanceof HTMLElement && t.tagName !== 'BUTTON' && t.getAttribute('role') === 'button') { e.preventDefault(); t.click(); }
@@ -227,6 +250,7 @@ class UiController {
     this.R.fx.flashMul = reduced ? 0.25 : 1;
     this.R.fx.dmgEnabled = s.dmgNumbers;
     this.R.fx.intensity = s.fxIntensity;
+    this.R.reducedMotion = reduced;
     this.R.postEnabled = s.postfx;
     if (this.R.quality !== s.quality) { this.R.quality = s.quality; this.R.resize(); }
     audio.setSfx(s.sfx); audio.setMusic(s.music);
@@ -237,6 +261,7 @@ class UiController {
 
   /* ---------- basic helpers ---------- */
   screen(name: string, html: string): HTMLDivElement {
+    this.preview = null;
     const root = $('screens'); root.innerHTML = '';
     const d = document.createElement('div'); d.className = 'screen'; d.id = name; d.innerHTML = html; root.appendChild(d);
     this.screenName = name;
@@ -279,6 +304,21 @@ class UiController {
     this.input.flush();
   }
 
+  private bindPreview(char: CharacterDef): void {
+    const canvas = document.getElementById('championPreview') as HTMLCanvasElement | null;
+    this.preview = canvas ? new ChampionPreview(canvas, char) : null;
+    this.preview?.update(1, this.R.reducedMotion);
+    document.querySelectorAll<HTMLButtonElement>('[data-pose]').forEach((button) => {
+      button.onclick = () => {
+        if (this.preview) this.preview.action = button.dataset.pose as HeroAction;
+        document.querySelectorAll('[data-pose]').forEach((el) => el.setAttribute('aria-pressed', String(el === button)));
+        this.preview?.update(1, this.R.reducedMotion);
+      };
+    });
+  }
+
+  updatePresentation(dt: number): void { this.preview?.update(dt, this.R.reducedMotion); }
+
   /* ============ TITLE ============ */
   showTitle(): void {
     this.game.state = 'idle'; $('hud').classList.add('hidden'); this.closeModal(); this.setLvlKeys(null); this.narrator.clear();
@@ -287,19 +327,29 @@ class UiController {
     const canContinue = d.stats.runs > 0 && lastC && Save.charData(lastC.id).unlocked && lastS && d.stages.unlocked.includes(lastS.id);
     const tip = TIPS[Math.floor(Math.random() * TIPS.length)] ?? '';
     this.screen('title', `
-      <div class="title-stats panel" style="padding:8px 14px">${this.currencyBar()}${soulRankHtml()}</div>
-      <div class="logo"><div class="ember-ring"></div><h1>SOULFORGE</h1><div class="sub">Endless Night</div></div>
-      <div class="menu">
-        ${canContinue ? `<button class="btn primary continue" id="contBtn"><img src="${S.portraitURL(lastC, 64)}" alt=""><span><b>Quick Start</b><small>${lastC.name} · ${lastS.name}</small></span></button>` : ''}
-        <button class="btn ${canContinue ? '' : 'primary'}" id="playBtn">${canContinue ? 'New Night' : 'Play'}</button>
-        <button class="btn" id="talentsBtn">Talents</button>
-        <button class="btn" id="ascendBtn">Ascension${contractsReady() || Save.starPointsFree() > 0 ? ' <span class="badge">!</span>' : ''}</button>
-        <button class="btn" id="forgeBtn">Forge</button>
-        <button class="btn" id="codexBtn">Codex</button>
-        <button class="btn" id="settingsBtn">Settings</button>
-      </div>
-      <div class="whisper">“${esc(tip)}”</div>
-      <div class="title-foot">Best: ${U.fmtTime(d.stats.bestTime)} · Kills: ${U.fmt(d.stats.kills)} · Runs: ${d.stats.runs}<span class="kbd-hint"> &nbsp;|&nbsp; <span class="kbd">WASD</span> move · <span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</span></div>`);
+      <div class="title-top"><span class="eyebrow">THE KEEPER'S SANCTUM</span><div class="title-stats">${this.currencyBar()}${soulRankHtml()}</div></div>
+      <div class="title-layout"><div class="title-copy">
+        <div class="logo"><h1>SOULFORGE</h1><div class="sub">Endless Night</div></div>
+        <p class="title-intro">Carry the last light into the dark.</p>
+        <p class="title-description">Forge a champion. Bind impossible powers.<br>Survive a world that fights back.</p>
+        <div class="menu">
+          ${canContinue ? `<button class="btn primary continue" id="contBtn"><img src="${S.portraitURL(lastC, 64)}" alt=""><span><b>Quick Start</b><small>${lastC.name} · ${lastS.name}</small></span><span aria-hidden="true">↗</span></button>` : ''}
+          <button class="btn ${canContinue ? '' : 'primary'}" id="playBtn">${canContinue ? 'New Night' : 'Begin the Night'} <span aria-hidden="true">→</span></button>
+          <div class="sanctum-nav">
+            <button class="btn" id="talentsBtn"><b>Talents</b><small>Shape your champion</small></button>
+            <button class="btn" id="ascendBtn"><b>Ascension${contractsReady() || Save.starPointsFree() > 0 ? ' <span class="badge">!</span>' : ''}</b><small>Reach beyond the night</small></button>
+            <button class="btn" id="forgeBtn"><b>Forge</b><small>Craft your arsenal</small></button>
+            <button class="btn" id="codexBtn"><b>Codex</b><small>Uncover the forgotten</small></button>
+          </div>
+          <button class="btn ghost" id="settingsBtn">Settings</button>
+        </div>
+      </div><div class="title-showcase" style="--champion-color:${(lastC ?? CHARACTERS[0]!).colors.accent}">
+        <div class="eyebrow">YOUR CHAMPION</div><canvas id="championPreview" width="560" height="480" aria-label="Animated preview of ${(lastC ?? CHARACTERS[0]!).name}"></canvas>
+        <div class="showcase-name">${(lastC ?? CHARACTERS[0]!).name}</div><div class="muted">${(lastC ?? CHARACTERS[0]!).title}</div>
+        <div class="showcase-rule"></div><div class="title-feature"><span>✧</span><div><b>Rifts in the dark</b><p>Seek optional trials. Seal the rift. Claim a relic that changes your build.</p></div></div>
+      </div></div>
+      <div class="title-bottom"><div class="whisper">“${esc(tip)}”</div><div class="title-foot">${CHARACTERS.length} champions · ${Object.keys(WEAPONS).length} weapons · ${STAGES.length} realms <span>Best ${U.fmtTime(d.stats.bestTime)} · ${d.stats.runs} nights</span></div></div>`);
+    this.bindPreview(lastC ?? CHARACTERS[0]!);
     $('playBtn').onclick = () => { audio.play('ui'); this.showChars(); };
     if (canContinue) $('contBtn').onclick = () => { audio.play('buy'); this.selChar = lastC.id; this.selStage = lastS.id; this.selTorment = Math.min(d.lastTorment, Save.tormentMax(lastS.id)); this.startRun(); };
     $('talentsBtn').onclick = () => { audio.play('ui'); this.showTalents(); };
@@ -364,7 +414,7 @@ class UiController {
     const xpNeed = charXpFor(cd.level);
     const evo = sig.evo;
     $('charDetail').innerHTML = `
-      <div class="char-detail"><div><img class="big-portrait" src="${S.portraitURL(c, 260)}" alt="${c.name}"><h2 style="margin:8px 0 0;color:var(--gold)">${c.name}${cd.ascension ? ` <span class="asc-pip big" title="Ascension ${roman(cd.ascension)}">${roman(cd.ascension)}</span>` : ''}</h2><div class="muted">${c.title}</div>
+      <div class="char-detail"><div><div class="champion-stage" style="--champion-color:${c.colors.accent}"><canvas id="championPreview" width="360" height="320" aria-label="Animated preview of ${c.name}"></canvas><div class="preview-controls" aria-label="Animation preview"><button data-pose="idle" aria-pressed="true">Idle</button><button data-pose="run" aria-pressed="false">Run</button><button data-pose="cast" aria-pressed="false">Cast</button></div></div><h2 style="margin:8px 0 0;color:var(--gold)">${c.name}${cd.ascension ? ` <span class="asc-pip big" title="Ascension ${roman(cd.ascension)}">${roman(cd.ascension)}</span>` : ''}</h2><div class="muted">${c.title}</div>
         <div style="margin:8px 0 4px;font-size:13px" class="muted">Level ${cd.level} · ${U.fmt(cd.xp)} / ${U.fmt(xpNeed)} XP · ${Save.talentPointsFree(c.id)} talent pts free</div><div class="bar"><i style="width:${(cd.xp / xpNeed * 100).toFixed(1)}%"></i></div>
         <p style="font-style:italic;color:#b9b5c8;font-size:14px">${c.lore}</p><div>${chapters}</div></div>
       <div class="col">
@@ -374,6 +424,7 @@ class UiController {
         <div class="kit">${ic(c.active.icon)}<div><h4>${c.active.name} <span class="muted" style="font-weight:400;font-size:12px">— active · ${c.active.cd}s · E</span></h4><p>${c.active.desc}</p></div></div>
       </div></div>
       <div class="row" style="margin-top:14px;justify-content:flex-end"><button class="btn" id="toAscend">Ascension</button><button class="btn" id="toTalents">Talents</button><button class="btn primary" id="toSetup" ${cd.unlocked ? '' : 'disabled'}>Continue ▶</button></div>`;
+    this.bindPreview(c);
     $('toTalents').onclick = () => { audio.play('ui'); this.showTalents(c.id, () => this.showChars()); };
     $('toAscend').onclick = () => { audio.play('ui'); this.selChar = c.id; this.showAscension('champions'); };
     $('toSetup').onclick = () => { audio.play('ui'); Save.data.lastChar = c.id; Save.save(); this.showSetup(); };
@@ -392,7 +443,7 @@ class UiController {
       <div class="panel" style="padding:16px;position:sticky;top:10px" id="setupSide"></div></div>`);
     this.bindBack(() => this.showChars());
     const renderStages = (): void => {
-      $('stageList').innerHTML = STAGES.map((s) => { const un = d.stages.unlocked.includes(s.id); return `<div class="stage-card ${un ? '' : 'locked'} ${s.id === this.selStage ? 'sel' : ''}" data-id="${s.id}" ${BTN}${un ? '' : ' aria-disabled="true"'}><div class="swatch" style="background:linear-gradient(135deg,${s.pal.groundLight},${s.pal.ground} 60%,${s.pal.groundDark})"></div><h3>${s.name}</h3><div class="tip">${s.desc}</div><div class="row" style="margin-top:6px;font-size:13px"><span class="bad">Difficulty ×${s.diff}</span><span class="gold">Reward ×${s.reward}</span></div><div class="tip">Best: ${U.fmtTime(d.stages.best[s.id] || 0)}${un || !s.unlock ? '' : ` · Unlock: survive ${U.fmtTime(s.unlock.time)} in ${STAGE_BY_ID[s.unlock.stage]!.name}`}</div></div>`; }).join('');
+      $('stageList').innerHTML = STAGES.map((s) => { const un = d.stages.unlocked.includes(s.id); return `<div class="stage-card ${un ? '' : 'locked'} ${s.id === this.selStage ? 'sel' : ''}" data-id="${s.id}" ${BTN}${un ? '' : ' aria-disabled="true"'}><img class="swatch stage-preview" src="${stagePreview(s)}" alt="Scenery in ${s.name}"><h3>${s.name}</h3><div class="tip">${s.desc}</div><div class="row" style="margin-top:6px;font-size:13px"><span class="bad">Difficulty ×${s.diff}</span><span class="gold">Reward ×${s.reward}</span></div><div class="tip">Best: ${U.fmtTime(d.stages.best[s.id] || 0)}${un || !s.unlock ? '' : ` · Unlock: survive ${U.fmtTime(s.unlock.time)} in ${STAGE_BY_ID[s.unlock.stage]!.name}`}</div></div>`; }).join('');
       $$($('stageList'), '.stage-card').forEach((el) => el.onclick = () => { const id = el.dataset.id!; if (!d.stages.unlocked.includes(id)) return; this.selStage = id; this.selTorment = Math.min(this.selTorment, Save.tormentMax(id)); audio.play('ui'); renderStages(); renderTorment(); renderSide(); });
     };
     const renderTorment = (): void => {
@@ -420,7 +471,7 @@ class UiController {
         <div style="margin:12px 0"><b>${st.name}</b>${this.selTorment ? ` <span class="tag torment-tag">Torment ${roman(this.selTorment)}</span>` : ''}<div class="tip">${st.desc}</div></div>
         <div class="heat">HEAT ${heat}</div><div class="tip">Gold, character XP, Iron and Dust ×${(heatBonus(heat) * tormentReward(this.selTorment)).toFixed(2)}<br>Stage: gold ×${st.reward}, character XP ×${Math.sqrt(st.reward).toFixed(2)}</div>
         ${known.length ? `<div style="margin-top:12px"><label class="tip" for="artSel">Soul Art (R)</label><select id="artSel" style="width:100%"><option value="">— none —</option>${known.map((id) => `<option value="${id}" ${d.art === id ? 'selected' : ''}>${ART_BY_ID[id]!.name} · Lv ${d.arts[id]}</option>`).join('')}</select>${art ? `<div class="tip" style="margin-top:4px">${esc(art.desc)}</div>` : ''}</div>` : ''}
-        <button class="btn primary" id="beginBtn" style="width:100%;margin-top:16px;font-size:20px">Begin the Night</button>`;
+        <div class="expedition-tip"><b>✧ Explore the rifts</b><p>Optional trials appear during the night. Stand still in a rift's core to commit, complete its objective, then choose a run-long relic.</p></div><button class="btn primary" id="beginBtn" style="width:100%;margin-top:16px;font-size:20px">Begin the Night</button>`;
       $('beginBtn').onclick = () => { audio.play('buy'); d.lastStage = this.selStage; d.lastTorment = this.selTorment; Save.save(); this.startRun(); };
       const sel = document.getElementById('artSel') as HTMLSelectElement | null;
       if (sel) sel.onchange = () => { Save.equipArt(sel.value); audio.play('ui'); renderSide(); };
@@ -699,6 +750,9 @@ class UiController {
       <div id="active"><div class="abw"><button type="button" class="ab dash" id="dashBtn" aria-label="Dash"><img id="dashImg" alt=""><span class="cd" id="dashCd"></span><span class="charges hidden" id="dashCh"></span></button><div class="lbl">Dash</div></div><div class="abw"><button type="button" class="ab" id="abBtn" aria-label="Use ability"><img id="abImg" alt=""><span class="cd" id="abCd"></span><span class="charges hidden" id="abCh"></span></button><div class="lbl" id="abLbl"></div></div><div class="abw hidden" id="artW"><button type="button" class="ab art" id="artBtn" aria-label="Use Soul Art"><img id="artImg" alt=""><span class="cd" id="artCd"></span></button><div class="lbl" id="artLbl"></div></div></div>
       <div class="bottom-right" id="hudHint"><span class="kbd">SPACE</span> dash · <span class="kbd">E</span> ability · <span class="kbd">R</span> soul art · <span class="kbd">M</span> map · <span class="kbd">T</span> damage · <span class="kbd">ESC</span> pause</div>`;
     const slot = (el: Element | null): HudSlot => new HudSlot(el as HTMLElement);
+    $('hud').insertAdjacentHTML('beforeend', '<div id="riftTracker" class="hidden"><div class="eyebrow">OPTIONAL RIFT</div><b id="riftName"></b><div id="riftDetail"></div><div class="bar"><i id="riftProgress"></i></div></div><div id="riftRelics" aria-label="Rift relics"></div>');
+    this.riftHud = { root: slot($('riftTracker')), name: slot($('riftName')), detail: slot($('riftDetail')), progress: slot($('riftProgress')), relics: $('riftRelics') };
+    $('hpbar').before($('riftRelics'));
     this.hudEls = { xp: slot($('xpbar').firstElementChild), xpTxt: slot($('xpTxt')), kills: slot($('killsTxt')), gold: slot($('goldTxt')), timer: slot($('timer')), heat: $('heatTxt'), stage: $('stageTxt'), bossbar: slot($('bossbar')), bossNm: slot($('bossNm')), bossHp: slot($('bossHp')), hp: slot($('hpbar').firstElementChild), hpS: slot($('hpbar').querySelector('s')), hpTxt: slot($('hpTxt')), resbar: slot($('resbar')), res: slot($('resbar').firstElementChild), reslabel: slot($('reslabel')), slots: $('slots'), abImg: $<HTMLImageElement>('abImg'), abCd: slot($('abCd')), abBtn: slot($('abBtn')), abCh: slot($('abCh')), abLbl: $('abLbl'), dashBtn: slot($('dashBtn')), dashCd: slot($('dashCd')), dashImg: $<HTMLImageElement>('dashImg'), dashCh: slot($('dashCh')), artW: slot($('artW')), artBtn: slot($('artBtn')), artCd: slot($('artCd')), artImg: $<HTMLImageElement>('artImg'), artLbl: $('artLbl'), combo: slot($('combo')), comboN: slot($('comboN')), comboName: slot($('comboName')), comboBar: slot($('comboBar')), boons: $('boons'), reso: $('reso'), buff: slot($('buff')), bossEp: slot($('bossEp')) };
     // the HUD markup starts with these states
     this.hudEls.bossbar.toggle('hidden', true); this.hudEls.resbar.toggle('hidden', true); this.hudEls.abCh.toggle('hidden', true); this.hudEls.combo.toggle('hidden', true); this.hudEls.buff.toggle('hidden', true); this.hudEls.artW.toggle('hidden', true); this.hudEls.dashCh.toggle('hidden', true);
@@ -729,6 +783,7 @@ class UiController {
     E.reslabel.setText(''); // also drops the cached value so a new run's label is always written
     this.hudBoss = null; this.hudBossTier = -1; this.hudBoons = -1; this.hudBuff = '';
     this.slotState.length = 0; this.slotDirty = true;
+    this.shownRelics = '|';
   }
   private fmtRes = (v: number, max: number): string => this.resName + (max > 1 ? ' ' + v + '/' + max : ' ' + v + '%');
   /** Record one value of the slot-bar state; marks the bar dirty when it differs from last frame. */
@@ -766,6 +821,29 @@ class UiController {
     if (g.art) { E.artBtn.toggle('ready', g.artCdT <= 0); E.artCd.setScaleY(Math.max(0, g.artCdT / g.artCooldown())); }
     this.map?.update(g);
     this.meter?.update(g);
+    if (this.riftHud) {
+      const r = g.rifts.current, H = this.riftHud;
+      const visible = !!r && (r.phase === 'available' || r.phase === 'active');
+      H.root.toggle('hidden', !visible);
+      H.root.toggle('engaged', r?.phase === 'active');
+      if (r && visible) {
+        H.name.setText(RIFT_DEFS[r.kind].name);
+        H.root.el.style.setProperty('--rift-color', RIFT_DEFS[r.kind].color);
+        const progress = r.phase === 'available' ? r.channel / RIFT_CHANNEL : r.kind === 'ward' ? r.progress / WARD_TIME : r.progress / 3;
+        H.progress.setWidth(progress);
+        const directions = ['→', '↘', '↓', '↙', '←', '↖', '↑', '↗'];
+        const direction = directions[(Math.round(Math.atan2(r.y - p.y, r.x - p.x) / U.TAU * 8) + 8) % 8];
+        const detail = r.phase === 'available' ? `${direction} Seek the rift · stand still in its core`
+          : r.kind === 'ward' ? `Hold the circle · ${Math.floor(r.progress)}/${WARD_TIME}s`
+          : r.kind === 'hunt' ? `Marked elites · ${r.progress}/3 defeated` : `Beacons · ${r.progress}/3 kindled`;
+        H.detail.setText(detail + ' · ' + Math.ceil(r.remaining) + 's');
+      }
+      const owned = g.rifts.relics.join('|');
+      if (owned !== this.shownRelics) {
+        this.shownRelics = owned;
+        H.relics.innerHTML = g.rifts.relics.map((id) => { const relic = RIFT_RELICS.find((x) => x.id === id)!; return `<span title="${relic.name} — ${relic.desc}">${ic(relic.icon, 'sm')}</span>`; }).join('');
+      }
+    }
     // kill streak
     if (g.comboTier > 0) {
       const ct = COMBO_TIERS[g.comboTier - 1]!;
@@ -883,6 +961,18 @@ class UiController {
   }
 
   /* ============ PAUSE ============ */
+  showRelic(options: RiftRelic[]): void {
+    this.modal(`<div class="eyebrow">RIFT SEALED</div><h2>A Light Claimed</h2><div class="sub">Choose a relic for the rest of this night · press 1–3</div><div class="cards">${options.map((r, i) => `<div class="card relic-card deal" data-i="${i}" style="--i:${i}" ${BTN}><div class="hot">${i + 1}</div><div class="boon-icon">${ic(r.icon, 'lg')}</div><div class="nm">${r.name}</div><div class="desc">${r.desc}</div><p class="relic-flavor">${r.flavor}</p></div>`).join('')}</div><div class="rift-payout">+${35 + this.game.rifts.completed * 15} gold · +1 Soul Ember · +${2 + this.game.rifts.completed} Iron</div>`, 'relic-modal');
+    const pick = (index: number): void => {
+      const relic = options[index];
+      if (!relic || !this.game.rifts.pick(relic.id)) return;
+      this.setLvlKeys(null); this.closeModal(); this.resumePlay(); audio.play('buy');
+      this.notice(relic.name + ' bound to your soul', '#5eead4', 2.5);
+    };
+    $$($('modal'), '.relic-card').forEach((el) => el.onclick = () => pick(Number(el.dataset.i)));
+    this.setLvlKeys((e) => { if (!e.repeat && /^[1-3]$/.test(e.key)) pick(Number(e.key) - 1); });
+  }
+
   showPause(): void {
     const g = this.game, p = g.player; if (g.state !== 'play' && g.state !== 'paused') return;
     g.state = 'paused';
@@ -893,7 +983,7 @@ class UiController {
       ${(p.boons as string[]).length ? `<h3 class="gold" style="margin:10px 0 6px">Boons</h3><div class="pause-items">${(p.boons as string[]).map((id) => { const b = BOON_BY_ID[id]!; return `<div class="it" title="${b.desc}"><img src="${S.iconURL(b.icon)}" alt=""><span>${b.name}</span></div>`; }).join('')}</div>` : ''}
       ${g.resonance.some((r) => r.tier) ? `<h3 class="gold" style="margin:10px 0 6px">Resonance</h3>${g.resonance.filter((r) => r.tier).map((r) => `<div class="tip"><b style="color:${r.def.color}">${r.def.name} ${r.count}</b> — ${r.def.tiers.slice(0, r.tier).map((t) => t.desc).join(' ')}</div>`).join('')}` : ''}
       <h3 class="gold" style="margin:10px 0 6px">${p.char.trait.name}</h3><div class="tip">${p.char.trait.desc}</div></div></div>
-      <div class="lvl-actions"><button class="btn primary" id="resumeBtn">Resume</button><button class="btn" id="pauseSettingsBtn">Settings</button><button class="btn danger" id="quitBtn">Abandon Run</button></div>`);
+      ${g.rifts.relics.length ? `<div class="run-relics"><h3>Rift relics · ${g.rifts.completed} sealed</h3>${g.rifts.relics.map((id) => { const r = RIFT_RELICS.find((x) => x.id === id)!; return `<div class="kit">${ic(r.icon, 'sm')}<div><b>${r.name}</b><p>${r.desc}</p></div></div>`; }).join('')}</div>` : ''}<div class="lvl-actions"><button class="btn primary" id="resumeBtn">Resume</button><button class="btn" id="pauseSettingsBtn">Settings</button><button class="btn danger" id="quitBtn">Abandon Run</button></div>`);
     $('resumeBtn').onclick = () => this.closePause();
     $('pauseSettingsBtn').onclick = () => this.showSettings(true);
     $('quitBtn').onclick = () => { if (confirm('Abandon this run? Rewards are still collected.')) { this.closeModal(); g.quit(); this.narrator.clear(); this.narrator.epitaph = ''; this.showGameOver(g.summary(), true); } };
@@ -922,6 +1012,7 @@ class UiController {
       ${sum.boons.length ? `<div class="row" style="justify-content:center;gap:6px;margin-bottom:10px">${sum.boons.map((id) => { const b = BOON_BY_ID[id]; return b ? `<span class="tag" style="background:#2e1f47;color:#e9d5ff">${ic(b.icon, 'sm')} ${b.name}</span>` : ''; }).join('')}</div>` : ''}
       <div class="rewards"><div class="reward">${ic({ g: 'coin', c: '#f5c542' })}<div><b class="gold">+${U.fmt(sum.gold)} gold</b></div></div><div class="reward">${ic({ g: 'ember', c: '#ff8a3c' })}<div><b style="color:#ff8a3c">+${sum.embers} Soul Embers</b></div></div><div class="reward">${ic({ g: 'book', c: '#c4b5fd' })}<div><b style="color:#c4b5fd">+${U.fmt(sum.charXp)} character XP</b><div class="tip">${c.name} is now level ${cd.level}${res.levelUps ? ` (+${res.levelUps} — new talent points!)` : ''}</div></div></div>${mats ? `<div class="reward">${ic({ g: 'shard', c: '#fde68a' })}<div>${mats}</div></div>` : ''}</div>
       ${prog}
+      ${(sum.relics ?? []).length ? `<div class="run-relics"><h3>Rifts sealed · ${sum.rifts ?? 0}</h3><div class="row" style="flex-wrap:wrap">${sum.relics!.map((id) => { const r = RIFT_RELICS.find((x) => x.id === id); return r ? `<span class="tag" title="${r.desc}">${ic(r.icon, 'sm')} ${r.name}</span>` : ''; }).join('')}</div></div>` : ''}
       ${res.unlocks.length ? `<div class="unlock-list">${res.unlocks.map((u) => `<div>✦ ${esc(u.text)}</div>`).join('')}</div>` : ''}
       <div class="pause-grid report-grid"><div><h3 class="gold" style="margin:0 0 6px">Damage report</h3>${damageReport(sum, c)}</div><div><h3 class="gold" style="margin:0 0 6px">Final build</h3><div class="pause-items">${sum.weapons.map((w) => { const d = WEAPONS[w.id]!, evo = w.evolved ? d.evo : undefined; return `<div class="it"><img src="${S.iconURL(evo ? evo.icon : d.icon)}" alt=""><span>${w.apex ? 'Exalted ' : ''}${evo ? evo.name : d.name} <b>${w.level > d.max ? 'OD ' + OVERDRIVE_NAMES[w.level - d.max - 1] : 'Lv' + w.level}</b></span></div>`; }).join('')}${sum.passives.map((x) => { const d = PASSIVE_BY_ID[x.id]!; return `<div class="it"><img src="${S.iconURL(d.icon)}" alt=""><span>${d.name} <b>Lv${x.level}</b></span></div>`; }).join('')}</div></div></div>
       <div class="lvl-actions"><button class="btn" id="goMenu">Main Menu</button><button class="btn" id="goTalents">Talents</button><button class="btn" id="goAscend">Ascension</button><button class="btn" id="goForge">Forge</button><button class="btn primary" id="goAgain">Play Again</button></div>`);

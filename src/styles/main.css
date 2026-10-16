@@ -3024,3 +3024,461 @@ svg.starweb .cons-lbl {
     width: 100%;
   }
 }
+
+/* The sanctum: calm surfaces, clear hierarchy, and the live champion as the focal point. */
+:root {
+  --panel: rgba(13, 15, 23, 0.96);
+  --panel2: rgba(22, 24, 34, 0.97);
+  --muted: #b0abbc;
+  --line: rgba(231, 195, 104, 0.22);
+}
+.screen:not(#title) {
+  background: linear-gradient(120deg, rgba(7, 9, 16, 0.96), rgba(13, 12, 23, 0.88));
+}
+.screen-head {
+  padding-bottom: 20px;
+  background: linear-gradient(180deg, rgba(8, 10, 17, 0.96), rgba(8, 10, 17, 0.7));
+  border-bottom: 1px solid rgba(231, 195, 104, 0.1);
+  margin-bottom: 16px;
+}
+.tabs button {
+  min-height: 38px;
+}
+.kit,
+.card,
+.stage-card,
+.char-card {
+  background-color: rgba(16, 18, 28, 0.94);
+}
+.eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: #b8a483;
+}
+#title {
+  display: block;
+  padding: 24px 5vw 18px;
+  overflow-y: auto;
+  background:
+    radial-gradient(ellipse at 76% 46%, rgba(76, 32, 16, 0.22), transparent 44%),
+    linear-gradient(90deg, rgba(7, 9, 14, 0.98) 3%, rgba(7, 9, 14, 0.78) 70%, rgba(7, 9, 14, 0.88));
+}
+.title-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(231, 195, 104, 0.16);
+}
+#title .title-stats {
+  position: static;
+  margin: 0;
+  max-width: 100%;
+}
+.title-stats .currency {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.title-stats .currency .icon {
+  width: 24px;
+  height: 24px;
+}
+.title-stats .soul-rank {
+  margin-top: 5px;
+}
+.title-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.95fr);
+  gap: 6vw;
+  align-items: center;
+  max-width: 1200px;
+  min-height: calc(100vh - 210px);
+  margin: 0 auto;
+  padding-top: 24px;
+}
+#title .logo {
+  text-align: left;
+  margin: 0 0 16px;
+}
+#title .logo h1 {
+  font-size: clamp(36px, 5.1vw, 78px);
+  letter-spacing: 0.01em;
+  filter: none;
+}
+#title .logo .sub {
+  font-size: 14px;
+  letter-spacing: 0.55em;
+  color: #b8a483;
+  text-shadow: none;
+  margin-top: 12px;
+}
+.title-intro {
+  font-family: 'Cinzel', serif;
+  font-size: clamp(16px, 1.7vw, 23px);
+  margin: 0 0 10px;
+  color: #f3e6c8;
+}
+.title-description {
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.5;
+  margin: 0 0 18px;
+}
+#title .menu {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  max-width: 460px;
+  gap: 9px;
+}
+#title .menu > .btn {
+  grid-column: 1 / -1;
+  padding: 12px 18px;
+  font-size: 16px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+}
+#title .menu .continue {
+  justify-content: flex-start;
+  gap: 12px;
+}
+#title .menu:has(#contBtn) > #contBtn {
+  grid-column: 1;
+  font-size: 14px;
+  padding: 9px 12px;
+}
+#title .menu:has(#contBtn) > #playBtn {
+  grid-column: 2;
+  font-size: 14px;
+  padding: 9px 12px;
+}
+#title .menu:has(#contBtn) > #contBtn img {
+  width: 32px;
+  height: 32px;
+}
+#title .continue > span:last-child {
+  margin-left: auto;
+}
+.sanctum-nav {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+#title .sanctum-nav .btn {
+  padding: 12px 16px;
+  text-align: left;
+  min-height: 68px;
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  background: linear-gradient(120deg, #191b24, #11121a);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.sanctum-nav small {
+  display: block;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.title-showcase {
+  text-align: center;
+  position: relative;
+  align-self: center;
+}
+.title-showcase canvas {
+  width: 100%;
+  max-width: 380px;
+  height: auto;
+  display: block;
+  margin: -18px auto -26px;
+}
+.showcase-name {
+  font:
+    700 30px 'Cinzel',
+    serif;
+  color: #f0dfb7;
+  letter-spacing: 0.1em;
+}
+.showcase-rule {
+  width: 80px;
+  height: 1px;
+  background: var(--champion-color);
+  opacity: 0.45;
+  margin: 22px auto;
+}
+.title-feature {
+  display: flex;
+  gap: 12px;
+  max-width: 340px;
+  margin: 0 auto;
+  text-align: left;
+  align-items: flex-start;
+}
+.title-feature > span {
+  color: var(--champion-color);
+  font-size: 28px;
+}
+.title-feature b {
+  font:
+    500 15px 'Cinzel',
+    serif;
+  color: #ddcba3;
+}
+.title-feature p {
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 7px 0 0;
+  color: var(--muted);
+}
+.title-bottom {
+  max-width: 1400px;
+  margin: 24px auto 0;
+  border-top: 1px solid rgba(231, 195, 104, 0.1);
+  padding-top: 14px;
+}
+#title .whisper {
+  position: static;
+  margin: 0 0 10px;
+  font-size: 13px;
+  text-align: left;
+  max-width: none;
+}
+#title .title-foot {
+  position: static;
+  margin: 0;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  text-align: left;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+.champion-stage {
+  width: 100%;
+  position: relative;
+  background: radial-gradient(ellipse at 50% 45%, var(--champion-color), transparent 80%);
+  background-color: #0b0d14;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.champion-stage canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: rgba(6, 9, 17, 0.87);
+}
+.preview-controls {
+  display: flex;
+  background: #11131d;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.preview-controls button {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  padding: 9px 4px;
+  font-size: 12px;
+  min-height: 34px;
+}
+.preview-controls button[aria-pressed='true'] {
+  color: #f3d791;
+  background: rgba(231, 195, 104, 0.09);
+  box-shadow: inset 0 -2px var(--gold);
+}
+.stage-card .stage-preview {
+  width: 100%;
+  height: 96px;
+  object-fit: cover;
+  border-radius: 6px;
+  display: block;
+}
+.expedition-tip {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.expedition-tip b {
+  font-size: 14px;
+  color: #5eead4;
+}
+.expedition-tip p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 0;
+}
+#riftTracker {
+  --rift-color: #5eead4;
+  position: absolute;
+  left: 16px;
+  top: 120px;
+  width: 248px;
+  padding: 13px 15px;
+  border-left: 2px solid var(--rift-color);
+  background: linear-gradient(90deg, rgba(10, 16, 23, 0.94), rgba(10, 16, 23, 0.7));
+  border-radius: 0 7px 7px 0;
+}
+#riftTracker .eyebrow {
+  color: var(--rift-color);
+  font-size: 9px;
+  margin-bottom: 6px;
+}
+#riftName {
+  display: block;
+  font:
+    500 14px 'Cinzel',
+    serif;
+  color: #eae4d6;
+}
+#riftDetail {
+  margin: 7px 0 9px;
+  font-size: 12px;
+  color: #c0bacd;
+  line-height: 1.4;
+}
+#riftTracker .bar {
+  height: 4px;
+}
+#riftProgress {
+  background: var(--rift-color);
+}
+#riftRelics {
+  position: static;
+  margin: 5px 0;
+  display: flex;
+  gap: 4px;
+  max-width: 240px;
+  flex-wrap: wrap;
+}
+.relic-card {
+  border-color: rgba(94, 234, 212, 0.35);
+  background: linear-gradient(150deg, #143033, #141321 75%);
+}
+.relic-card:hover {
+  border-color: #5eead4;
+  box-shadow: 0 0 24px rgba(94, 234, 212, 0.12);
+}
+.relic-flavor {
+  color: #8faaa9;
+  font-size: 12px;
+  font-style: italic;
+  margin-top: 20px;
+}
+.rift-payout {
+  text-align: center;
+  color: var(--gold);
+  font-size: 13px;
+  margin-top: 16px;
+}
+.relic-modal > .eyebrow {
+  text-align: center;
+  color: #5eead4;
+  margin-bottom: 10px;
+}
+.run-relics {
+  margin: 15px 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.run-relics h3 {
+  font-size: 15px;
+  color: #5eead4;
+}
+@media (max-width: 900px) {
+  .title-top > .eyebrow {
+    display: none;
+  }
+  .title-top {
+    justify-content: flex-end;
+  }
+  .title-layout {
+    gap: 22px;
+  }
+  #title .logo h1 {
+    font-size: 44px;
+  }
+  .title-feature {
+    max-width: 280px;
+  }
+}
+@media (max-width: 700px) {
+  #title {
+    padding: 16px;
+  }
+  .title-top {
+    padding-bottom: 12px;
+  }
+  .title-layout {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+    padding-top: 26px;
+  }
+  .title-showcase {
+    display: none;
+  }
+  #title .logo h1 {
+    font-size: clamp(34px, 8.7vw, 58px);
+  }
+  #title .logo .sub {
+    font-size: 12px;
+  }
+  #title .menu {
+    max-width: none;
+  }
+  .title-description {
+    font-size: 15px;
+  }
+  #title .whisper {
+    margin-top: 0;
+  }
+  .char-detail .champion-stage {
+    max-width: 250px;
+    margin: 0 auto;
+  }
+  #riftTracker {
+    left: 10px;
+    top: 105px;
+    width: min(210px, calc(100vw - 130px));
+    padding: 9px 10px;
+  }
+  #riftName {
+    font-size: 12px;
+  }
+  #riftRelics {
+    top: 218px;
+    left: 10px;
+  }
+}
+@media (max-height: 450px) and (min-width: 701px) {
+  .title-layout {
+    padding-top: 20px;
+  }
+  .title-showcase canvas {
+    max-width: 300px;
+  }
+  .title-feature {
+    display: none;
+  }
+  #riftTracker {
+    top: 92px;
+    width: 200px;
+    padding: 8px 10px;
+  }
+  #riftRelics {
+    top: 192px;
+  }
+}

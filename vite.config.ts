@@ -5,6 +5,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 export default defineConfig({
   // Relative base so the build works from any sub-path (GitHub Pages, itch.io, file hosts).
   base: './',
+  server: { port: 5175 },
   build: {
     target: 'es2022',
     sourcemap: true,

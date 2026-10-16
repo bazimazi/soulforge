@@ -16,6 +16,8 @@ export interface AtlasRegion {
 
 interface Page {
   tex: WebGLTexture;
+  used: number;
+  active: boolean;
   /** current shelf */
   x: number;
   y: number;
@@ -27,7 +29,8 @@ const MAX_PAGES = 8;
 
 export class TextureAtlas {
   private pages: Page[] = [];
-  private regions = new WeakMap<HTMLCanvasElement, AtlasRegion>();
+  private regions = new WeakMap<HTMLCanvasElement, { region: AtlasRegion; page: Page }>();
+  private frame = 0;
   /** Bumped whenever the atlas is reset; consumers holding regions must re-query. */
   generation = 0;
 
@@ -40,12 +43,28 @@ export class TextureAtlas {
     return this.pages.length;
   }
 
+  /** Evict cold pages only between frames. Recorded batches still own every texture used this frame. */
+  beginFrame(): void {
+    this.frame++;
+    for (let i = 0; i < this.pages.length && this.pages.length > MAX_PAGES;) {
+      const page = this.pages[i]!;
+      if (page.used < this.frame - 1) {
+        page.active = false;
+        this.gl.deleteTexture(page.tex);
+        this.pages.splice(i, 1);
+      } else i++;
+    }
+  }
+
   region(img: HTMLCanvasElement): AtlasRegion {
-    let r = this.regions.get(img);
-    if (r) return r;
-    r = this.pack(img);
-    this.regions.set(img, r);
-    return r;
+    const cached = this.regions.get(img);
+    if (cached?.page.active) {
+      cached.page.used = this.frame;
+      return cached.region;
+    }
+    const packed = this.pack(img);
+    this.regions.set(img, packed);
+    return packed.region;
   }
 
   private newPage(): Page {
@@ -60,15 +79,24 @@ export class TextureAtlas {
     // texStorage contents are undefined until written: clear to transparent so padding never bleeds.
     const zero = new Uint8Array(this.size * this.size * 4);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.size, this.size, gl.RGBA, gl.UNSIGNED_BYTE, zero);
-    const page = { tex, x: 0, y: 0, rowH: 0 };
+    const page = { tex, x: 0, y: 0, rowH: 0, used: this.frame, active: true };
     this.pages.push(page);
     return page;
   }
 
-  private pack(img: HTMLCanvasElement): AtlasRegion {
-    const w = img.width + PAD * 2,
-      h = img.height + PAD * 2;
-    if (w > this.size || h > this.size) throw new Error(`Sprite ${img.width}x${img.height} exceeds atlas page size ${this.size}`);
+  private pack(img: HTMLCanvasElement): { region: AtlasRegion; page: Page } {
+    // Area bonuses can grow a spell beyond a page. Resample its texture, preserving the original
+    // canvas dimensions/pivot used by image() for world geometry in both rendering backends.
+    const scale = Math.min(1, (this.size - PAD * 2) / Math.max(img.width, img.height));
+    let source = img;
+    if (scale < 1) {
+      source = document.createElement('canvas');
+      source.width = Math.max(1, Math.floor(img.width * scale));
+      source.height = Math.max(1, Math.floor(img.height * scale));
+      source.getContext('2d')!.drawImage(img, 0, 0, source.width, source.height);
+    }
+    const w = source.width + PAD * 2,
+      h = source.height + PAD * 2;
     let page = this.pages[this.pages.length - 1];
     if (page && page.x + w > this.size) {
       page.x = 0;
@@ -76,23 +104,26 @@ export class TextureAtlas {
       page.rowH = 0;
     }
     if (!page || page.y + h > this.size) {
-      if (this.pages.length >= MAX_PAGES) this.reset();
       page = this.newPage();
     }
     const x = page.x + PAD,
       y = page.y + PAD;
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, page.tex);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    page.used = this.frame;
     page.x += w;
     page.rowH = Math.max(page.rowH, h);
     const s = this.size;
-    return { tex: page.tex, u0: x / s, v0: y / s, u1: (x + img.width) / s, v1: (y + img.height) / s };
+    return { page, region: { tex: page.tex, u0: x / s, v0: y / s, u1: (x + source.width) / s, v1: (y + source.height) / s } };
   }
 
-  /** Drop every page (on overflow or context loss); sprites re-upload lazily. */
+  /** Drop every page on context loss; sprites re-upload lazily. */
   reset(lost = false): void {
-    if (!lost) for (const p of this.pages) this.gl.deleteTexture(p.tex);
+    for (const p of this.pages) {
+      p.active = false;
+      if (!lost) this.gl.deleteTexture(p.tex);
+    }
     this.pages = [];
     this.regions = new WeakMap();
     this.generation++;

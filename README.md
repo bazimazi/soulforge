@@ -8,7 +8,7 @@ coloured HDR lighting, cast shadows, dissolve deaths, shockwave refraction, bloo
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
+npm run dev        # http://localhost:5175
 ```
 
 ## Controls

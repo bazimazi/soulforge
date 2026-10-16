@@ -6,22 +6,26 @@
  * is smooth at any display refresh rate. Nothing here mutates gameplay state.
  *
  * Frame layout: ground → ground details → decals → zones/telegraphs → cast shadows → corpses → pickups →
- * one y-sorted pass of props, enemies, allies and the champion → debris → projectiles → light map →
- * additive glows/trails/particles → numbers and bars → screen-space overlays → post (bloom, grading,
+ * one y-sorted pass of props, enemies, allies and the champion → debris → light map → spell bodies/edges →
+ * glows/trails/particles and spell accents → numbers and bars → screen-space overlays → post (bloom, grading,
  * shockwaves).
  */
 import { U } from '../core/util';
 import { AFFIX_BY_ID } from '../data/enemies';
 import { MAT_BY_ID, STAGES } from '../data/passives';
 import { SHRINE_DEFS, TRIAL_TIME } from '../data/shrines';
+import { RIFT_DEFS } from '../data/rifts';
+import { WARD_RADIUS, WARD_TIME, RIFT_CHANNEL } from '../game/rifts';
 import type { Game } from '../game/game';
-import type { Ally, Enemy, Projectile, StageDef, Weapon } from '../game/types';
+import type { Ally, Enemy, Projectile, StageDef } from '../game/types';
+import { heroAnimation } from './hero-animation';
+import { exposedPoolArcs } from './pool-boundary';
 import { PF, type FX } from './fx';
 import { MAX_WAVES, type Backend, type Img, type PostFX } from './gfx/backend';
 import { Canvas2DBackend } from './gfx/canvas2d';
 import { WebGL2Backend } from './gfx/webgl2';
 import { CHUNK, propLayout } from './layout';
-import { ENEMY_FRAMES, GROUND_DETAILS, HERO_FRAMES, PROP_LIGHTS, Sprites as S } from './sprites';
+import { ENEMY_FRAMES, GROUND_DETAILS, PROP_LIGHTS, Sprites as S } from './sprites';
 
 const TAU = Math.PI * 2;
 const MAX_LIGHTS = 420;
@@ -138,6 +142,8 @@ function makeSprite(w: number, h: number, ox: number, oy: number, draw: (x: Canv
 const easeOut = (k: number) => 1 - (1 - k) * (1 - k);
 /** Brightness falloff for big effects: past `ref` world units an effect dims, so a late-game blast never whites out the field. */
 const sizeFade = (r: number, ref = 90) => (r > ref ? ref / r : 1);
+/** Large spell silhouettes retain their shape; only their broad light/fill uses inverse-size fading. */
+const shapeFade = (r: number, ref = 90) => 0.65 + 0.35 * Math.sqrt(sizeFade(r, ref));
 /** Additive effects stack: dim each one as the live count passes `n`. */
 const crowdFade = (count: number, n: number) => (count > n ? n / count : 1);
 /** Light radius for an effect of gameplay radius `r`: grows sub-linearly so huge areas don't light the whole screen. */
@@ -148,7 +154,25 @@ export class Renderer {
   readonly fx: FX;
   quality = 1;
   /** Shared decorative brightness budget across simultaneous spell families. */
-  private spellOpacity = 0.6;
+  private spellOpacity = 0.64;
+  /** Stable slider curve for bodies/edges; dense volleys share opacity only with nearby projectiles. */
+  private spellCoreOpacity = 0.9;
+  private visibleSpells = {
+    projectiles: 0,
+    mines: 0,
+    zones: 0,
+    rings: 0,
+    novas: 0,
+    explosions: 0,
+    beams: 0,
+    bolts: 0,
+    arcs: 0,
+    lines: 0,
+    whips: 0,
+    meteors: 0,
+    lights: 0,
+  };
+  private projectileCells = new Map<number, number>();
   /** Bloom & colour grading (WebGL2 only; Settings → Post-processing). */
   postEnabled = true;
   private post: PostFX = {
@@ -207,8 +231,7 @@ export class Renderer {
   /** Champion facing, springing between −1 and 1 so turning reads as a quick pivot instead of a mirror snap. */
   private faceS = 1;
   /** Seconds left of the cast pose (the signature weapon just fired). */
-  private castT = 0;
-  private lastTimer = new WeakMap<Weapon, number>();
+  reducedMotion = false;
   private labels = new WeakMap<Enemy, string>();
   /** Recent positions of each projectile (ring buffer of x, y pairs + head index + count) for ribbon trails. */
   private ribbons = new WeakMap<Projectile, Float32Array>();
@@ -265,6 +288,9 @@ export class Renderer {
     // a new run: forget the last run's chests so they don't "open" as they vanish
     this.chestsSeen.clear();
     this.opened.length = 0;
+    this.trail.length = 0;
+    this.trailT = this.dustT = this.pillarT = this.lastLevel = 0;
+    this.faceS = 1;
   }
 
   setStage(stage: StageDef): void {
@@ -349,21 +375,53 @@ export class Renderer {
       x1 = this.cam.x + vw,
       y1 = this.cam.y + vh;
     const fx = this.fx;
+    // Budget only what intersects this view. Long-lived projectiles and pools off screen must
+    // never dim the fight in front of the player. Bodies use a stable slider curve; only broad
+    // decoration shares the crowd budget (applying both used to make some families disappear).
+    const visible = (x: number, y: number, r: number) => x + r >= x0 && x - r <= x1 && y + r >= y0 && y - r <= y1;
+    const count = <T extends { x: number; y: number }>(items: readonly T[], radius: (item: T) => number) => {
+      let n = 0;
+      for (const item of items) if (visible(item.x, item.y, radius(item))) n++;
+      return n;
+    };
+    const v = this.visibleSpells;
+    v.projectiles = count(g.projs, (p) => p.r + 40);
+    v.mines = count(g.mines, (m) => m.r * 0.45);
+    this.projectileCells.clear();
+    for (const pr of g.projs)
+      if (visible(pr.x, pr.y, pr.r + 40)) {
+        const cell = Math.floor(pr.x / 128) * 65536 + Math.floor(pr.y / 128);
+        this.projectileCells.set(cell, (this.projectileCells.get(cell) || 0) + 1);
+      }
+    v.zones = count(g.zones, (z) => z.r);
+    v.rings = count(fx.rings, (r) => r.r);
+    v.novas = fx.novas.filter(({ n }) => visible(n.x, n.y, n.r)).length;
+    v.explosions = count(fx.explosions, (e) => e.r);
+    v.beams = fx.beams.filter((b) => visible((b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2, Math.hypot(b.x2 - b.x1, b.y2 - b.y1) / 2 + b.w)).length;
+    v.bolts = count(fx.bolts, () => 420);
+    v.arcs = count(fx.arcs, (ar) => ar.r);
+    v.lines = count(fx.lines, (ln) => ln.len);
+    v.whips = count(fx.whips, (w) => w.len);
+    v.meteors = count(fx.meteors, () => 600);
+    v.lights = count(fx.flashLights, (f) => softR(f.r));
     const load =
-      g.projs.length / 30 +
-      g.zones.length / 5 +
-      (fx.explosions.length + fx.novas.length + fx.bolts.length) / 6 +
-      (fx.beams.length + fx.arcs.length + fx.lines.length + fx.whips.length + fx.meteors.length) / 12;
-    this.spellOpacity = (0.6 * fx.intensity) / Math.max(1, Math.sqrt(load));
+      v.projectiles / 40 +
+      v.mines / 18 +
+      v.zones / 8 +
+      v.rings / 12 +
+      (v.explosions + v.novas + v.bolts) / 8 +
+      (v.beams + v.arcs + v.lines + v.whips + v.meteors) / 16;
+    this.spellOpacity = (0.64 * fx.intensity) / Math.sqrt(Math.max(1, load));
+    this.spellCoreOpacity = 0.12 + 0.78 * fx.intensity;
     this.drawGround(x0, y0, x1, y1);
     this.drawDetails(g.time, x0, y0, x1, y1);
     this.drawDecals(x0, y0, x1, y1);
     this.drawCloudShadows(g.time, x0, y0, x1, y1);
     this.drawShrines(g, x0, y0, x1, y1);
+    this.drawRift(g);
     this.drawZones(g);
     this.drawHazards(g);
     this.drawMines(g);
-    this.drawTelegraphs();
     this.drawEnemyTelegraphs(g, a);
     this.collect(g, a, x0, y0, x1, y1, ppx, ppy);
     this.drawShadows(g, a, ppx, ppy);
@@ -374,11 +432,14 @@ export class Renderer {
     for (const pr of g.eprojs) {
       if (this.lightCols.length < 360) this.light(pr.x, pr.y, 60, 0.45, pr.color);
     }
-    this.drawProjectiles(g, a);
     this.drawFog(g, x0, y0, x1, y1);
-    this.drawLighting(g);
+    this.drawLighting(g, a);
     B.setView(z, 0, 0, z, tx, ty);
+    // Spell silhouettes stay legible through ambient darkness; hostile cores still draw above them.
+    this.drawProjectiles(g, a);
+    this.drawZoneEdges(g);
     this.drawAdditive(g, a, ppx, ppy);
+    this.drawTelegraphs();
     this.drawEnemyProjectiles(g, a);
     this.drawTexts();
     this.drawPlayerBars(g, ppx, ppy);
@@ -543,6 +604,54 @@ export class Renderer {
     }
   }
 
+  private drawRift(g: Game): void {
+    const r = g.rifts.current;
+    if (!r) return;
+    const B = this.backend,
+      def = RIFT_DEFS[r.kind],
+      c = def.color;
+    const fade = r.phase === 'complete' || r.phase === 'failed' ? Math.min(1, r.remaining / 3) : 1;
+    const pulse = this.reducedMotion ? 1 : 0.85 + Math.sin(this.clock * 2.5) * 0.15;
+    const marker = (x: number, y: number, progress: number, lit: boolean): void => {
+      B.radial(x, y, 65, c, 0.15 * fade, c, 0.02 * fade, 0.6);
+      B.ring(x, y, 40, 24, 0, 2, c, (lit ? 0.35 : 0.85) * fade);
+      const bob = this.reducedMotion ? 0 : Math.sin(this.clock * 2) * 3;
+      B.line(x - 12, y - 30 - bob, x, y - 52 - bob, 3, c, fade);
+      B.line(x, y - 52 - bob, x + 12, y - 30 - bob, 3, c, fade);
+      B.line(x + 12, y - 30 - bob, x, y - 12 - bob, 3, c, fade);
+      B.line(x, y - 12 - bob, x - 12, y - 30 - bob, 3, c, fade);
+      B.glow(x, y - 30, 22, c, 0.3 * pulse * fade);
+      if (progress > 0) B.arc(x, y, 46, -Math.PI / 2, Math.min(1, progress) * TAU, 4, '#fff3c4', fade);
+      this.light(x, y - 20, 160, 0.6 * fade, c);
+    };
+    B.ring(r.x, r.y, WARD_RADIUS, WARD_RADIUS, 0, 2, c, 0.5 * fade);
+    if (r.kind === 'ward' && r.phase === 'active') {
+      B.circle(r.x, r.y, WARD_RADIUS, c, 0.055);
+      B.arc(r.x, r.y, WARD_RADIUS + 5, -Math.PI / 2, (r.progress / WARD_TIME) * TAU, 4, '#ccfbf1', 0.9);
+    }
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * TAU;
+      const x = r.x + Math.cos(a) * WARD_RADIUS,
+        y = r.y + Math.sin(a) * WARD_RADIUS;
+      B.line(x - 4, y - 4, x + 4, y + 4, 2, c, 0.7 * fade);
+    }
+    marker(r.x, r.y, r.channel / RIFT_CHANNEL, r.phase !== 'available');
+    B.text(def.name, r.x, r.y - 82, 15, c, fade, true);
+    if (r.phase === 'available') B.text('Stand still in the core to begin', r.x, r.y + 64, 12, '#e4e4e7', fade);
+    if (r.phase === 'active' && r.kind === 'relay')
+      for (const b of r.beacons) {
+        B.line(r.x, r.y, b.x, b.y, 1, c, 0.18);
+        marker(b.x, b.y, b.channel / RIFT_CHANNEL, b.lit);
+        if (b.lit) B.text('KINDLED', b.x, b.y - 65, 12, c, 0.6, true);
+      }
+    if (r.phase === 'active' && r.kind === 'hunt')
+      for (const e of r.targets) {
+        if (e.dead) continue;
+        B.ring(e.x, e.y, e.r + 8, (e.r + 8) * 0.6, 0, 2, c, 0.8);
+        B.text('◆', e.x, e.y - e.r - 24, 21, c, 1, true);
+      }
+  }
+
   private drawShrines(g: Game, x0: number, y0: number, x1: number, y1: number): void {
     const B = this.backend,
       t = g.time;
@@ -602,14 +711,13 @@ export class Renderer {
     const B = this.backend,
       t = g.time;
     // late game stacks many pools at once (Sanctified Deluge, fire trails, spore clouds): each dims as they pile up
-    const crowd = crowdFade(g.zones.length, 5) * this.spellOpacity;
+    const crowd = this.spellOpacity;
     for (const z of g.zones) {
       const life = Math.max(0, Math.min(1, z.age * 4, (z.dur - z.age) * 2)),
         fade = life * crowd * sizeFade(z.r, 110);
       if (z.kind === 'blackhole') {
         B.radial(z.x, z.y, z.r, '#000', 0.28 * fade, '#0a0019', 0.22 * fade, 0.55);
         B.ring(z.x, z.y, z.r * 0.85, z.r * 0.85, 0, z.r * 0.25, z.color, 0.4 * fade, 1.5);
-        B.ring(z.x, z.y, z.r * 1.05, z.r * 0.35, t * 2, 2, z.color, 0.35 * life * Math.sqrt(crowd));
         // matter spiralling in
         if (this.dt > 0 && Math.random() < 0.6) {
           const an = Math.random() * TAU;
@@ -619,14 +727,10 @@ export class Renderer {
       } else if (z.kind === 'laser') {
         const I = fade;
         B.radial(z.x, z.y, z.r, z.color, 0.18 * I, z.color, 0.12 * I, 0.4);
-        B.ring(z.x, z.y, z.r, z.r, 0, 1.5, z.color, 0.4 * life * Math.sqrt(crowd));
         this.light(z.x, z.y, softR(z.r), 0.3 * I, z.color);
       } else {
         const pulse = 0.85 + Math.sin(t * 6 + z.x) * 0.15;
         B.radial(z.x, z.y, z.r, z.color, 0.28 * pulse * fade, z.color, 0.16 * fade, 0.7);
-        const rr = z.r * (0.95 + Math.sin(t * 4) * 0.03);
-        // the rim stays crisp so the pool's reach is always readable, however faint its fill
-        B.ring(z.x, z.y, rr, rr, 0, 1.5, z.color, 0.4 * pulse * life * Math.sqrt(crowd));
         if (z.kind === 'fire' && this.dt > 0 && Math.random() < 0.6 * crowd)
           this.fx.burst(z.x + U.lerp(-z.r, z.r, Math.random()) * 0.8, z.y + U.lerp(-z.r, z.r, Math.random()) * 0.8, '#ff9a3c', 1, {
             speed: 20,
@@ -644,11 +748,51 @@ export class Renderer {
       I = this.spellOpacity;
     for (const m of g.mines) {
       const pulse = 0.5 + Math.sin(g.time * 6 + m.pulse) * 0.5;
-      B.glow(m.x, m.y, 14, m.color, I);
-      B.circle(m.x, m.y, 7, '#223', 1);
-      B.circle(m.x, m.y, 3.5, m.color, (0.5 + pulse * 0.5) * Math.sqrt(I));
-      if (m.armT <= 0) B.ring(m.x, m.y, m.r * 0.45, m.r * 0.45, 0, 1, m.color, (0.15 + pulse * 0.15) * Math.sqrt(I));
+      B.glow(m.x, m.y, 14, m.color, I * 0.5);
+      B.circle(m.x, m.y, 7, '#223', this.spellCoreOpacity);
       this.light(m.x, m.y, 50, (0.4 + pulse * 0.3) * I, m.color);
+    }
+  }
+
+  /** Persistent pool boundaries render after the light map, independently of the muted ground fill. */
+  private drawZoneEdges(g: Game): void {
+    const B = this.backend;
+    const overlap = Math.sqrt(crowdFade(this.visibleSpells.zones, 4));
+    for (const [index, z] of g.zones.entries()) {
+      const life = Math.max(0, Math.min(1, z.age * 4, (z.dur - z.age) * 2));
+      const edge = life * this.spellCoreOpacity * shapeFade(z.r, 140) * (0.25 + 0.75 * overlap);
+      const fill = life * this.spellOpacity * sizeFade(z.r, 170);
+      if (z.kind !== 'blackhole') B.radial(z.x, z.y, z.r, z.color, 0.12 * fill, z.color, 0.08 * fill, 0.7);
+      if (z.kind === 'blackhole') {
+        B.ring(z.x, z.y, z.r * 0.85, z.r * 0.85, 0, 2.5, z.color, edge * 0.75);
+        B.ring(z.x, z.y, z.r * 1.05, z.r * 0.35, g.time * 2, 2, z.color, edge * 0.65);
+      } else {
+        const arcs = exposedPoolArcs(index, g.zones);
+        if (arcs.length === 2 && arcs[0] === 0 && arcs[1] === TAU) B.ring(z.x, z.y, z.r, z.r, 0, 2, z.color, edge * 0.68);
+        else
+          for (let i = 0; i < arcs.length; i += 2)
+            B.arc(z.x, z.y, z.r, (arcs[i]! + arcs[i + 1]!) / 2, (arcs[i + 1]! - arcs[i]!) / 2, 2, z.color, edge * 0.68);
+      }
+    }
+    for (const m of g.mines) {
+      const pulse = 0.7 + Math.sin(g.time * 6 + m.pulse) * 0.3;
+      const core = this.spellCoreOpacity * Math.sqrt(crowdFade(this.visibleSpells.mines, 18));
+      B.circle(m.x, m.y, 4, m.color, core * pulse);
+      if (m.armT <= 0) {
+        B.ring(m.x, m.y, 8, 8, 0, 1.5, m.color, core * 0.7);
+        // Trigger ranges are decoration. Hundreds of armed cluster charges must not form an
+        // opaque web over the champion; the charge itself remains a clear, pulsing rune.
+        B.ring(
+          m.x,
+          m.y,
+          m.r * 0.45,
+          m.r * 0.45,
+          0,
+          1,
+          m.color,
+          this.spellOpacity * 0.12 * Math.sqrt(crowdFade(this.visibleSpells.mines, 8)),
+        );
+      }
     }
   }
 
@@ -660,12 +804,13 @@ export class Renderer {
         urgent = 0.5 + 0.5 * Math.sin(t * (10 + k * 30));
       if (tg.type === 'circle') {
         const c = tg.color || '#f87171';
+        const core = tg.friendly ? this.spellCoreOpacity : 1;
+        const fill = tg.friendly ? this.spellOpacity * sizeFade(tg.r, 120) : 1;
         // the danger fills inward-out; the rim beats faster as impact nears
-        B.circle(tg.x, tg.y, tg.r, c, 0.1 + k * 0.08);
-        B.radial(tg.x, tg.y, tg.r * easeOut(k), c, 0.05, c, 0.3, 0.85);
-        B.ring(tg.x, tg.y, tg.r, tg.r, 0, 2.5, c, 0.55 + urgent * 0.35 * k);
-        B.ring(tg.x, tg.y, tg.r * 0.55, tg.r * 0.55, 0, 1, c, 0.25);
-        this.light(tg.x, tg.y, tg.r * 1.4, 0.25 + k * 0.35, c);
+        B.circle(tg.x, tg.y, tg.r, c, (0.1 + k * 0.08) * fill);
+        B.radial(tg.x, tg.y, tg.r * easeOut(k), c, 0.05 * fill, c, 0.3 * fill, 0.85);
+        B.ring(tg.x, tg.y, tg.r, tg.r, 0, 2.5, c, (0.55 + urgent * 0.35 * k) * core);
+        B.ring(tg.x, tg.y, tg.r * 0.55, tg.r * 0.55, 0, 1, c, 0.25 * core);
       } else if (!tg.e.dead) {
         const e = tg.e,
           ang = Math.atan2(tg.py - e.y, tg.px - e.x),
@@ -1166,10 +1311,10 @@ export class Renderer {
       t = g.time;
     const x = al.px + (al.x - al.px) * a,
       y = al.py + (al.y - al.py) * a;
-    const fade = Math.max(0, Math.min(1, (al.life - al.age) * 2, al.age * 3));
+    const fade = Math.max(0, Math.min(1, (al.life - al.age) * 2, al.age * 3)) * this.spellCoreOpacity;
     const c = al.color,
       flip = al.flip || 1;
-    B.glow(x, y + 4, 18, c, fade * 0.7);
+    B.glow(x, y + 4, 18, c, fade * this.spellOpacity * 0.5);
     const fr = (k: number) => (ENEMY_FRAMES > 1 ? Math.floor((((al.walk * k) / TAU) % 1) * ENEMY_FRAMES + ENEMY_FRAMES) % ENEMY_FRAMES : 0);
     if (al.kind === 'skeleton')
       B.image(S.enemy('skeleton', 12, { body: '#d6cfc0', eye: c }, 0, fr(0.5)), x, y - Math.abs(Math.sin(al.walk)) * 1.5, {
@@ -1207,7 +1352,7 @@ export class Renderer {
     } else if (al.kind === 'clone') {
       B.image(S.hero(g.player.char, 0), x, y, { sx: flip, alpha: fade * 0.6, tint: c, tintA: 0.7 });
     }
-    this.light(x, y, 80, 0.45, c);
+    this.light(x, y, 80, 0.45 * this.spellOpacity, c);
   }
 
   private drawPlayer(g: Game, x: number, y: number): void {
@@ -1215,7 +1360,7 @@ export class Renderer {
       p = g.player,
       t = g.time;
     const moving = p.move.x || p.move.y;
-    const bob = moving ? Math.abs(Math.sin(p.walkT)) * 2 : Math.sin(this.clock * 2.2) * 1;
+    const bob = 0; // the articulated sprite supplies the body bob; feet stay planted on their sigil
     const flip = p.face.x < 0 ? -1 : 1;
     if (this.dt > 0) this.faceS += (flip - this.faceS) * Math.min(1, this.dt * 22);
     const accent = p.char.colors.accent;
@@ -1226,37 +1371,23 @@ export class Renderer {
     B.arc(x, y + 22, 29, this.clock * 2 + Math.PI, 0.55, 2, accent, 0.55);
     // a soft halo of the champion's colour behind the body keeps the silhouette readable in any crowd
     B.glow(x, y - 12, 44, accent, 0.28);
-    if (p.frostAuraR) {
-      B.circle(x, y, p.frostAuraR, 'rgb(186,230,253)', 0.06);
-      B.ring(x, y, p.frostAuraR, p.frostAuraR, 0, 1.5, 'rgb(186,230,253)', 0.35);
-    }
     if (p.auraColor) {
-      B.glow(x, y - bob + 10, 56, p.auraColor, 0.38 + Math.sin(t * 5) * 0.1);
+      B.glow(x, y - bob + 10, 56, p.auraColor, (0.38 + Math.sin(t * 5) * 0.1) * this.spellOpacity);
       if (this.dt > 0 && Math.random() < 0.4)
         this.fx.burst(x + U.lerp(-16, 16, Math.random()), y + 20, p.auraColor, 1, { speed: 15, life: 0.8, up: true, size: 3 });
-      this.light(x, y, 150, 0.35, p.auraColor);
+      this.light(x, y, 150, 0.35 * this.spellOpacity, p.auraColor);
     }
     const alpha = p.invulnT > 0.15 ? 0.5 + Math.sin(t * 30) * 0.3 : 1;
-    const s = 1.15,
-      breath = moving ? 1 : 1 + Math.sin(this.clock * 2.2) * 0.015;
-    // walk cycle frame (frame 0 is the standing pose)
-    const walkFrames = HERO_FRAMES - 1;
-    const frame = moving ? 1 + (Math.floor((p.walkT / TAU) * walkFrames * 0.999) % walkFrames) : 0;
-    const lean = p.dashT > 0 ? p.dashDx * 0.25 : p.move.x * 0.08;
-    // cast pose: the signature weapon just fired (its timer jumped back up)
-    const sig = p.weapons[0];
-    if (sig) {
-      const last = this.lastTimer.get(sig) ?? sig.timer;
-      if (sig.timer > last + 0.05) this.castT = 0.14;
-      this.lastTimer.set(sig, sig.timer);
-    }
-    if (this.dt > 0) this.castT -= this.dt;
+    const s = 1.24,
+      breath = 1;
+    const lean = this.reducedMotion ? 0 : p.dashT > 0 ? p.dashDx * 0.18 : p.move.x * 0.045;
+    const anim = heroAnimation(p, t, this.clock, this.reducedMotion);
     // dash afterimages
     if (this.dt > 0) {
       this.trailT -= this.dt;
       if (p.dashT > 0 && this.trailT <= 0) {
         this.trailT = 0.03;
-        this.trail.push(x, y - bob, 0);
+        this.trail.push(x, y + 22, 0);
       }
       for (let i = 2; i < this.trail.length; i += 3) this.trail[i]! += this.dt;
       while (this.trail.length && this.trail[2]! > 0.3) this.trail.splice(0, 3);
@@ -1267,14 +1398,14 @@ export class Renderer {
         this.fx.burst(x - p.move.x * 8, y + 22, '#9a8f8a', 2, { speed: 24, life: 0.45, size: 4, add: false, up: true });
       }
     }
-    const hero = this.castT > 0 ? S.heroCast(p.char) : S.hero(p.char, frame);
+    const hero = S.heroAnimated(p.char, anim.action, anim.frame, anim.back, anim.gait);
     for (let i = 0; i < this.trail.length; i += 3) {
       const k = 1 - this.trail[i + 2]! / 0.3;
       B.image(hero, this.trail[i]!, this.trail[i + 1]!, {
         sx: this.faceS * s,
         sy: s,
         rot: lean,
-        alpha: k * 0.45,
+        alpha: k * 0.45 * this.spellCoreOpacity,
         tint: accent,
         tintA: 0.85,
       });
@@ -1303,24 +1434,21 @@ export class Renderer {
     }
     // the turn: |faceS| dips towards 0 as the champion pivots
     const turn = Math.max(0.15, Math.abs(this.faceS)) * Math.sign(this.faceS || 1);
-    B.image(hero, x, y - bob, {
+    B.image(hero, x, y + 22 - bob, {
       sx: turn * s * (2 - breath),
-      sy: s * breath,
+      sy: s * breath * 1.08,
       rot: lean,
       alpha,
-      flash: p.hurtFlash > 0 ? 0.85 : 0,
+      flash: p.hurtFlash > 0 ? Math.min(0.85, p.hurtFlash * 4) : 0,
     });
     if (p.shield > 0) {
       const r = 30 + Math.sin(t * 4) * 2;
-      B.circle(x, y - 10, r, 'rgb(125,211,252)', 0.08);
-      B.ring(x, y - 10, r, r, 0, 2, 'rgb(125,211,252)', 0.7);
-      B.arc(x, y - 10, r, t * 3, 0.6, 3, '#e0f2fe', 0.6);
-      this.light(x, y, 120, 0.3, '#7dd3fc');
+      B.circle(x, y - 10, r, 'rgb(125,211,252)', 0.08 * this.spellOpacity);
+      B.ring(x, y - 10, r, r, 0, 2, 'rgb(125,211,252)', 0.7 * this.spellCoreOpacity);
+      B.arc(x, y - 10, r, t * 3, 0.6, 3, '#e0f2fe', 0.6 * this.spellCoreOpacity);
+      this.light(x, y, 120, 0.3 * this.spellOpacity, '#7dd3fc');
     }
     if (p.blood > 0) B.ring(x, y - 10, 28, 28, 0, 2, '#ef4444', 0.3 + 0.5 * (p.blood / (p.bloodCap || 1)));
-    if (p.cycloneT > 0)
-      for (let i = 0; i < 3; i++) B.ring(x, y - 10 - i * 12, 40 + i * 14, 12 + i * 4, t * 8 + i, 3, 'rgb(94,234,212)', 0.6);
-    if (p.stormT > 0) B.ring(x, y, 420, 420, 0, 2, 'rgb(125,211,252)', 0.5);
   }
 
   /** Debris and dust that live on the ground: drawn before the light map so the night darkens them. */
@@ -1361,6 +1489,15 @@ export class Renderer {
     }));
   }
 
+  /** Nearby volleys share opacity locally; a lone missile elsewhere in the view keeps its body. */
+  private projectileCrowd(x: number, y: number): number {
+    const cx = Math.floor(x / 128),
+      cy = Math.floor(y / 128);
+    let count = 0;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) count += this.projectileCells.get((cx + dx) * 65536 + cy + dy) || 0;
+    return 0.4 + 0.6 * Math.sqrt(crowdFade(count, 12));
+  }
+
   private drawProjectiles(g: Game, a: number): void {
     const B = this.backend,
       I = this.spellOpacity;
@@ -1370,8 +1507,13 @@ export class Renderer {
       const x = pr.px + (pr.x - pr.px) * a,
         y = pr.py + (pr.y - pr.py) * a;
       const color = sp.color ?? '#fff',
-        core = Math.max(0.06, (0.1 + Math.sqrt(I) * 0.7) * sizeFade(pr.r, 32));
-      if (sp.kind === 'orb') B.image(S.orb(color, sp.size || 6) as Img, x, y, { alpha: core, sx: 1 + Math.sin(pr.age * 20) * 0.08 });
+        core = this.spellCoreOpacity * shapeFade(pr.r, 32) * this.projectileCrowd(x, y);
+      // The halo is drawn separately with the decorative budget, so restoring the body cannot flood the arena.
+      if (sp.kind === 'orb')
+        B.image(S.orb(color, sp.size || 6, U.mix(color, '#ffffff', 0.4), false) as Img, x, y, {
+          alpha: core * Math.sqrt(sizeFade(sp.size || 6, 28)),
+          sx: 1 + Math.sin(pr.age * 20) * 0.08,
+        });
       else if (sp.kind === 'void') {
         const r = sp.size || 14;
         B.radial(x, y, r * 2, '#000', 0.3 * I, '#140028', 0.2 * I, 0.5);
@@ -1392,17 +1534,16 @@ export class Renderer {
           const w = s * (0.4 + i * 0.25);
           B.ring(x + Math.sin(pr.rot + i) * 4, y - i * s * 0.35 + s * 0.4, w, w * 0.35, 0, 3, color, core);
         }
-      } else if (sp.kind === 'spike') B.image(this.spikeSprite(), x, y, { alpha: core });
+      } else if (sp.kind === 'spike')
+        B.image(this.spikeSprite(), x, y, { alpha: core, sx: (sp.size || 14) / 14, tint: color, tintA: 0.25 });
       else {
         const b = sp as { len?: number; wid?: number };
         B.image(S.bolt(color, b.len || 20, b.wid || 5, sp.kind) as Img, x, y, { rot: pr.angle + pr.rot, alpha: core });
       }
-      if (pr.light) this.light(x, y, softR(pr.light), 0.4 * I, color);
-      else if (this.lightCols.length < 300) this.light(x, y, 45, 0.25 * I, color);
     }
   }
 
-  private drawLighting(g: Game): void {
+  private drawLighting(g: Game, a: number): void {
     const B = this.backend,
       L = this.lights,
       C = this.lightCols,
@@ -1412,16 +1553,31 @@ export class Renderer {
       m = amb.match(/[\d.]+/g);
     // deepen the stage's night so coloured light has room to matter
     const darkA = m ? Math.min(0.85, +m[3]! * this.grade.dark * (g.eclipse ? 1.15 : 1)) : 0.5;
+    for (const pr of g.projs) {
+      if (!pr.sprite) continue;
+      const color = pr.sprite.color ?? '#fff';
+      if (pr.light || this.lightCols.length < 300)
+        this.light(
+          pr.px + (pr.x - pr.px) * a,
+          pr.py + (pr.y - pr.py) * a,
+          pr.light ? softR(pr.light) : 45,
+          (pr.light ? 0.4 : 0.25) * this.spellOpacity,
+          color,
+        );
+    }
     B.beginLights(m ? `rgba(${m[0]},${m[1]},${m[2]},${darkA})` : amb, 0.25);
     for (let i = 0, j = 0; i < L.length; i += 4, j++) B.light(L[i]!, L[i + 1]!, L[i + 2]!, L[i + 3]! * eclipse, C[j] ?? lantern);
     const fx = this.fx,
       I = this.spellOpacity,
-      exK = crowdFade(fx.explosions.length, 6) * I,
-      flK = crowdFade(fx.flashLights.length, 10) * I,
-      nvK = crowdFade(fx.novas.length, 4) * I;
+      exK = I,
+      flK = I * Math.sqrt(crowdFade(this.visibleSpells.lights, 10)),
+      nvK = I;
     for (const ex of fx.explosions) B.light(ex.x, ex.y, softR(ex.r) * 2, (ex.life / ex.max) * 0.8 * exK, ex.color);
     for (const f of fx.flashLights) B.light(f.x, f.y, softR(f.r), (f.life / f.max) * flK, f.color);
     for (const nv of fx.novas) B.light(nv.n.x, nv.n.y, softR(nv.n.r) + 30, 0.3 * (1 - nv.n.r / nv.n.maxR) * nvK, nv.color);
+    for (const tg of fx.tele)
+      if (tg.type === 'circle')
+        B.light(tg.x, tg.y, softR(tg.r) * 1.4, (0.25 + (tg.t / tg.max) * 0.35) * (tg.friendly ? I : 1), tg.color || '#f87171');
     B.endLights();
   }
 
@@ -1450,9 +1606,13 @@ export class Renderer {
     const B = this.backend;
     for (let i = 0; i + 3 < pts.length; i += 2) {
       B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, width * 4, color, alpha * 0.35, 1.5);
-      B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, width, color, alpha);
-      if (core > 0) B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, Math.max(1, width * 0.3), '#fff', core);
     }
+    B.setBlend('normal');
+    for (let i = 0; i + 3 < pts.length; i += 2) {
+      B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, Math.min(10, width), color, core);
+      B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, Math.max(1, Math.min(2, width * 0.25)), '#fff', core * 0.45);
+    }
+    B.setBlend('add');
   }
 
   /** Tapered ribbons behind moving projectiles, from a short history of interpolated positions. */
@@ -1489,7 +1649,7 @@ export class Renderer {
           qx = rb[idx]!,
           qy = rb[idx + 1]!;
         const k = 1 - i / n;
-        B.line(px, py, qx, qy, Math.min(8, w) * k, color, 0.25 * k * this.spellOpacity, 1.5);
+        B.line(px, py, qx, qy, Math.min(8, w) * k, color, 0.38 * k * this.spellOpacity, 1.5);
         px = qx;
         py = qy;
       }
@@ -1501,12 +1661,13 @@ export class Renderer {
       fx = this.fx,
       t = g.time,
       // the player's spell-intensity setting scales every spell visual below (not enemy telegraphs)
-      I = this.spellOpacity;
+      I = this.spellOpacity,
+      C = this.spellCoreOpacity;
     B.setBlend('add');
     if (this.quality >= 0.5) this.drawRibbons(g, a);
     this.drawParticles();
     // a late-game volley is dozens of projectiles: their halos dim as the count grows, and big ones stay modest
-    const prK = 0.42 * crowdFade(g.projs.length, 40) * I;
+    const prK = 0.42 * I;
     for (const pr of g.projs) {
       const sp = pr.sprite;
       if (!sp || sp.kind === 'void') continue;
@@ -1528,40 +1689,50 @@ export class Renderer {
       const k = Math.sin(G[i + 2]! * Math.PI);
       B.image(star, G[i]!, G[i + 1]!, { sx: 0.4 + k * 0.6, rot: G[i + 2]! * 1.5, alpha: k });
     }
-    const rgK = crowdFade(fx.rings.length, 6) * I;
+    const rgK = I;
     for (const r of fx.rings) {
       const lt = r.life / r.max,
         k = lt * rgK * sizeFade(r.r, 140),
+        edge = lt * C * shapeFade(r.r, 140) * (0.4 + 0.6 * Math.sqrt(crowdFade(this.visibleSpells.rings, 6))),
         rad = r.r * (r.thin ? 1 : 0.5 + easeOut(1 - lt) * 0.5);
-      B.ring(r.x, r.y, rad, rad, 0, r.thin ? 2 : 3 + (1 - lt) * 4, r.color, k * 0.8);
       if (!r.thin) B.ring(r.x, r.y, rad, rad, 0, 12, r.color, k * 0.18, 1.5);
+      B.setBlend('normal');
+      B.ring(r.x, r.y, rad, rad, 0, r.thin ? 2 : 3, r.color, edge * 0.8);
+      B.setBlend('add');
     }
     // novas: a crisp travelling edge with a soft halo; the inner wash stays faint so big rings don't flood the screen
-    const nvK = crowdFade(fx.novas.length, 4) * I;
+    const nvK = I;
     for (const nv of fx.novas) {
       const n = nv.n,
         k = 1 - n.r / n.maxR,
         w = nv.thin ? 3 : 6 + k * 5,
-        f = nvK * sizeFade(n.r, 140);
+        f = nvK * sizeFade(n.r, 140),
+        edge = C * shapeFade(n.r, 140) * Math.min(1, k * 5) * (0.55 + 0.45 * Math.sqrt(crowdFade(this.visibleSpells.novas, 4)));
       B.ring(n.x, n.y, n.r, n.r, 0, w * 2, nv.color, 0.28 * f, 1.5);
-      B.ring(n.x, n.y, n.r, n.r, 0, w, nv.color, 0.75 * f);
       B.circle(n.x, n.y, n.r, nv.color, 0.07 * k * f);
+      B.setBlend('normal');
+      B.ring(n.x, n.y, n.r, n.r, 0, nv.thin ? 2 : 4, nv.color, 0.85 * edge);
+      B.setBlend('add');
     }
     // in a dense fight explosions stack additively: dim each one as the count grows so it never whites out,
     // and big blasts dim with their size so a late-game meteor reads as a hit, not a screen flash
-    const exK = crowdFade(fx.explosions.length, 6) * I;
+    const exK = I;
     for (const ex of fx.explosions) {
       const e = 1 - ex.life / ex.max,
-        k = (ex.life / ex.max) * exK * sizeFade(ex.r);
+        k = (ex.life / ex.max) * exK * sizeFade(ex.r),
+        edge = (ex.life / ex.max) * C * shapeFade(ex.r, 140) * (0.4 + 0.6 * Math.sqrt(crowdFade(this.visibleSpells.explosions, 6)));
       // white-hot core → coloured fireball → expanding shock ring
       B.glow(ex.x, ex.y, ex.r * (0.5 + e * 0.5), ex.color, k * 0.55);
       B.glow(ex.x, ex.y, ex.r * (0.3 + e * 0.2), '#fff', k * k * 0.3);
       const rr = ex.r * (0.3 + easeOut(e) * 0.7);
-      B.ring(ex.x, ex.y, rr, rr, 0, 2 + k * 3, '#fff', k * 0.45);
       B.ring(ex.x, ex.y, rr, rr, 0, 10, ex.color, k * 0.2, 1.5);
+      B.setBlend('normal');
+      B.ring(ex.x, ex.y, rr, rr, 0, 3, ex.color, edge * 0.8);
+      B.ring(ex.x, ex.y, rr, rr, 0, 1, '#fff', edge * 0.25);
+      B.setBlend('add');
     }
     const pts: number[] = [];
-    const bmK = crowdFade(fx.beams.length, 14) * I;
+    const bmK = I;
     for (const b of fx.beams) {
       const k = b.life / b.max,
         dx = b.x2 - b.x1,
@@ -1578,15 +1749,15 @@ export class Renderer {
         pts.push(b.x1 + dx * tt + nx * off, b.y1 + dy * tt + ny * off);
       }
       pts.push(b.x2, b.y2);
-      this.glowPath(pts, b.w * (0.5 + k), b.color, k * bmK, k * 0.7 * bmK);
+      this.glowPath(pts, b.w * (0.5 + k), b.color, k * bmK, k * C);
       B.glow(b.x2, b.y2, 14 + b.w * 2.5, b.color, k * 0.55 * bmK);
     }
-    const boK = crowdFade(fx.bolts.length, 4) * I;
+    const boK = I;
     for (const bo of fx.bolts) {
       const lt = bo.life / bo.max,
         k = lt * boK;
       pts.length = 0;
-      let x = bo.x + (Math.random() - 0.5) * 60,
+      let x = bo.x + (U.hash2(bo.seed, Math.floor(t * 30), 19) - 0.5) * 60,
         y = bo.y - 420;
       pts.push(x, y);
       for (let i = 0; i < 8; i++) {
@@ -1595,18 +1766,18 @@ export class Renderer {
         pts.push(x, y);
       }
       pts.push(bo.x, bo.y);
-      this.glowPath(pts, 3 * lt + 1, bo.color, k, k * 0.8);
+      this.glowPath(pts, 3 * lt + 1, bo.color, k, lt * C);
       B.glow(bo.x, bo.y, 40, bo.color, k * 0.55);
       B.ring(bo.x, bo.y, 30 * (1.5 - lt), 12 * (1.5 - lt), 0, 2, '#fff', k * 0.8);
     }
-    const lnK = crowdFade(fx.lines.length, 6) * I;
+    const lnK = I;
     for (const ln of fx.lines) {
       const lt = ln.life / ln.max,
         k = lt * 0.75 * lnK,
         ca = Math.cos(ln.angle),
         sa = Math.sin(ln.angle),
         L = ln.len * Math.min(1, (1 - lt) * 3 + 0.2);
-      B.line(ln.x, ln.y, ln.x + ca * L, ln.y + sa * L, ln.width, ln.color, k, 0, ln.color, 0);
+      B.line(ln.x, ln.y, ln.x + ca * L, ln.y + sa * L, ln.width, ln.color, k * 0.32, 0, ln.color, 0);
       pts.length = 0;
       pts.push(ln.x, ln.y);
       for (let i = 1; i <= 8; i++) {
@@ -1614,19 +1785,28 @@ export class Renderer {
           off = (U.hash2(i, ln.x | 0, ln.y | 0) - 0.5) * ln.width * 0.6;
         pts.push(ln.x + ca * along - sa * off, ln.y + sa * along + ca * off);
       }
-      for (let i = 0; i + 3 < pts.length; i += 2) B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, 2, '#fff', k);
+      B.setBlend('normal');
+      for (let i = 0; i + 3 < pts.length; i += 2) {
+        B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, 3, ln.color, lt * C);
+        B.line(pts[i]!, pts[i + 1]!, pts[i + 2]!, pts[i + 3]!, 1, '#fff', lt * C * 0.35);
+      }
+      B.setBlend('add');
     }
-    const arK = crowdFade(fx.arcs.length, 8) * I;
+    const arK = I;
     for (const ar of fx.arcs) {
       const lt = ar.life / ar.max,
         k = lt * arK,
         r = ar.r * (ar.thin ? 1 : 0.7 + easeOut(1 - lt) * 0.3),
         // wide and long sweeps (a full 360° inferno) keep a faint smear: the blade edge carries the motion
-        fill = (ar.thin ? 0.24 : 0.34) * Math.min(1, 1.3 / ar.halfArc) * sizeFade(r, 130);
+        fill = (ar.thin ? 0.24 : 0.34) * Math.min(1, 1.3 / ar.halfArc) * sizeFade(r, 130),
+        edge = lt * C * shapeFade(r, 130);
       // a swept blade: bright leading edge, the sector smearing behind it
       B.sector(ar.x, ar.y, r, ar.angle, ar.halfArc, ar.color, fill * k);
       B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 8, ar.color, k * 0.35);
-      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 2.5, '#fff', k * 0.9);
+      B.setBlend('normal');
+      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 3, ar.color, edge * 0.9);
+      B.arc(ar.x, ar.y, r, ar.angle, ar.halfArc, 1, '#fff', edge * 0.3);
+      B.setBlend('add');
     }
     for (const w of fx.whips) {
       const k = w.life / w.max,
@@ -1640,24 +1820,32 @@ export class Renderer {
           u = 1 - s;
         pts.push(u * u * w.x + 2 * u * s * cx + s * s * ex, u * u * w.y + 2 * u * s * cy + s * s * ey);
       }
-      this.glowPath(pts, 6, w.color, k * I, 0.5 * k * I);
+      this.glowPath(pts, 6, w.color, k * I, k * C);
     }
     for (const lb of fx.lobs) {
       const k = lb.t / lb.max,
         x = U.lerp(lb.x, lb.tx, k),
         y = U.lerp(lb.y, lb.ty, k) - Math.sin(k * Math.PI) * 90;
-      B.image(S.orb(lb.color, 6) as Img, x, y, { alpha: 0.2 + Math.sqrt(I) * 0.6 });
+      B.setBlend('normal');
+      B.image(S.orb(lb.color, 6, '#ffffff', false) as Img, x, y, { alpha: C });
+      B.setBlend('add');
       if (this.dt > 0) fx.trail(x, y, lb.color, 4);
     }
     for (const m of fx.meteors) {
       const k = m.t / m.max,
-        y = m.y - (1 - k) * 600;
-      if (m.small)
-        B.image(S.bolt(m.color || '#fde047', 18, 3, 'arrow') as Img, m.x, y, { rot: Math.PI / 2, alpha: 0.2 + Math.sqrt(I) * 0.6 });
-      else {
+        y = m.y - (1 - k) * 600,
+        body = m.friendly === false ? 1 : C,
+        detail = m.friendly === false ? 1 : I;
+      if (m.small) {
+        B.setBlend('normal');
+        B.image(S.bolt(m.color || '#fde047', 18, 3, 'arrow') as Img, m.x, y, { rot: Math.PI / 2, alpha: body });
+        B.setBlend('add');
+      } else {
         const mx = m.x + (1 - k) * 120;
-        B.line(mx + 60, y - 300, mx, y, 12, '#ff7043', 0.22 * I, 1.5, '#ffd08a', 0.4 * I);
-        B.image(S.orb('#ff7043', 14) as Img, mx, y, { alpha: 0.2 + Math.sqrt(I) * 0.6 });
+        B.line(mx + 60, y - 300, mx, y, 12, '#ff7043', 0.22 * detail, 1.5, '#ffd08a', 0.4 * detail);
+        B.setBlend('normal');
+        B.image(S.orb('#ff7043', 14, '#ffffff', false) as Img, mx, y, { alpha: body });
+        B.setBlend('add');
         if (this.dt > 0) fx.trail(mx, y, '#ff9a3c', 8);
       }
     }
@@ -1690,18 +1878,30 @@ export class Renderer {
             x2 = ppx + Math.cos(an) * w.len,
             y2 = ppy + Math.sin(an) * w.len;
           B.line(ppx, ppy, x2, y2, 22, '#fbbf24', 0.22 * I, 1.5, '#fbbf24', 0);
-          B.line(ppx, ppy, x2, y2, 9, w.evolved ? '#fb923c' : '#fbbf24', 0.6 * I, 0, '#fbbf24', 0);
-          B.line(ppx, ppy, x2, y2, 3, '#fff', 0.5 * Math.sqrt(I), 0, '#fff', 0.1 * I);
+          B.setBlend('normal');
+          B.line(ppx, ppy, x2, y2, 7, w.evolved ? '#fb923c' : '#fbbf24', 0.9 * C, 0, '#fbbf24', 0.15 * C);
+          B.line(ppx, ppy, x2, y2, 2, '#fff', 0.4 * C, 0, '#fff', 0.08 * C);
+          B.setBlend('add');
         }
       }
       if (w.id === 'plague_aura' && w.radius) {
         const r = w.radius;
         B.radial(ppx, ppy, r, w.evolved ? '#84cc16' : '#a3e635', 0.02 * I, '#a3e635', 0.11 * sizeFade(r, 140) * I, 0.8, 0.3);
         const rr = r * (0.98 + Math.sin(t * 3) * 0.02);
-        B.ring(ppx, ppy, rr, rr, 0, 2, 'rgb(163,230,53)', 0.35 * Math.sqrt(I));
+        B.setBlend('normal');
+        B.ring(ppx, ppy, rr, rr, 0, 2, 'rgb(163,230,53)', 0.7 * C);
+        B.setBlend('add');
       }
     }
-    if (p.feastT > 0) B.ring(ppx, ppy, 245, 245, 0, 3, 'rgb(239,68,68)', 0.5);
+    B.setBlend('normal');
+    if (p.frostAuraR) {
+      B.circle(ppx, ppy, p.frostAuraR, '#bae6fd', 0.06 * I * sizeFade(p.frostAuraR, 140));
+      B.ring(ppx, ppy, p.frostAuraR, p.frostAuraR, 0, 1.5, '#bae6fd', 0.55 * C);
+    }
+    if (p.cycloneT > 0)
+      for (let i = 0; i < 3; i++) B.ring(ppx, ppy - 10 - i * 12, 40 + i * 14, 12 + i * 4, t * 8 + i, 3, '#5eead4', 0.65 * C);
+    if (p.stormT > 0) B.ring(ppx, ppy, 420, 420, 0, 2, '#7dd3fc', 0.55 * C);
+    if (p.feastT > 0) B.ring(ppx, ppy, 245, 245, 0, 3, '#ef4444', 0.55 * C);
     B.setBlend('normal');
   }
 
@@ -1819,7 +2019,7 @@ export class Renderer {
       P.waves[n * 4] = sx;
       P.waves[n * 4 + 1] = sy;
       P.waves[n * 4 + 2] = w.maxR * easeOut(k) * this.zoom;
-      P.waves[n * 4 + 3] = w.str * Math.pow(1 - k, 1.5) * this.dpr;
+      P.waves[n * 4 + 3] = w.str * (w.spell ? this.fx.intensity : 1) * Math.pow(1 - k, 1.5) * this.dpr;
       n++;
     }
     P.waveCount = n;
@@ -1855,6 +2055,19 @@ export class Renderer {
   private drawIndicators(g: Game, a: number): void {
     const W = this.W,
       H = this.H;
+    const rift = g.rifts.current;
+    if (rift && (rift.phase === 'available' || rift.phase === 'active')) {
+      const goals =
+        rift.phase === 'active' && rift.kind === 'hunt'
+          ? rift.targets.filter((e) => !e.dead)
+          : rift.phase === 'active' && rift.kind === 'relay'
+            ? rift.beacons.filter((b) => !b.lit)
+            : [rift];
+      for (const goal of goals) {
+        const [sx, sy] = this.worldToScreen(goal.x, goal.y);
+        if (sx < 0 || sx > W || sy < 0 || sy > H) this.indicator(sx, sy, RIFT_DEFS[rift.kind].color);
+      }
+    }
     for (const e of g.enemies) {
       if (!(e.boss || e.elite || e.def.flee || e.auraR) || e.dead) continue;
       const [sx, sy] = this.worldToScreen(e.px + (e.x - e.px) * a, e.py + (e.y - e.py) * a);

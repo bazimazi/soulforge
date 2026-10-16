@@ -81,6 +81,7 @@ function boot(): void {
     render(alpha, frameDt) {
       try {
         input.poll();
+        UI.updatePresentation(frameDt);
         if (game.state !== 'idle') UI.updateHud(game);
         audio.setIntensity(
           game.state === 'play'

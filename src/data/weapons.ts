@@ -418,7 +418,7 @@ registerWeapon({
     for (let i = 0; i < s.amount; i++) {
       const t = tg.length ? tg[Math.floor(rand() * tg.length)]! : null;
       const x = t ? t.x : p.x + U.rand(-180, 180), y = t ? t.y : p.y + U.rand(-180, 180), r = 52 * s.area;
-      g.fx.telegraphCircle(x, y, r, 0.45, '#fde68a');
+      g.fx.telegraphCircle(x, y, r, 0.45, '#fde68a', true);
       g.after(0.45 + i * 0.06, () => {
         g.lightning(x, y, r, s.dmg, w, { color: '#fde68a' });
         if (w.evolved) { g.lineDamage(x - r * 1.6, y, 0, r * 3.2, 18, s.dmg * 0.5, w, { color: '#fff7d6' }); g.lineDamage(x, y - r * 1.6, Math.PI / 2, r * 3.2, 18, s.dmg * 0.5, w, { color: '#fff7d6' }); g.heal(1, true, true); }
@@ -552,7 +552,7 @@ registerWeapon({
     for (let i = 0; i < s.amount; i++) {
       const t = list[i] ?? null;
       const x = t ? t.x : p.x + U.rand(-160, 160), y = t ? t.y : p.y + U.rand(-160, 160), r = 85 * s.area;
-      g.fx.telegraphCircle(x, y, r, 0.5, '#fde68a');
+      g.fx.telegraphCircle(x, y, r, 0.5, '#fde68a', true);
       g.after(0.5 + i * 0.12, () => {
         g.explode(x, y, r, s.dmg, w, { knock: s.knock, color: '#fde68a' });
         g.eachEnemyIn(x, y, r, (e) => g.applyStatus(e, 'stun', { dur: 0.8 }));

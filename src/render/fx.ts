@@ -283,6 +283,7 @@ export interface WaveFx extends Timed {
   y: number;
   maxR: number;
   str: number;
+  spell?: boolean;
 }
 /** Short coloured light flash (lightning strikes, muzzle flashes). */
 export interface FlashLightFx extends Timed {
@@ -307,9 +308,10 @@ export interface MeteorFx extends Progress {
   y: number;
   small?: boolean;
   color?: string;
+  friendly?: boolean;
 }
 export type TelegraphFx =
-  | (Progress & { type: 'circle'; x: number; y: number; r: number; color?: string })
+  | (Progress & { type: 'circle'; x: number; y: number; r: number; color?: string; friendly?: boolean })
   | (Progress & { type: 'line'; e: Enemy; px: number; py: number });
 /** A scheduled presentation callback (boss death sequences), in real seconds. */
 interface Cue {
@@ -459,7 +461,7 @@ export class FX {
       if (str < 20) return;
       this.waves.shift(); // set pieces (a Herald's fall) always get their ripple
     }
-    this.waves.push({ x, y, maxR, str: str < 20 ? str * this._intensity : str, life, max: life });
+    this.waves.push({ x, y, maxR, str, spell: str < 20, life, max: life });
   }
   /** A brief coloured light at (x, y). */
   flashLight(x: number, y: number, r: number, color: string, life = 0.18): void {
@@ -590,9 +592,9 @@ export class FX {
   lob(x: number, y: number, tx: number, ty: number, t: number, color: string): void {
     this.lobs.push({ x, y, tx, ty, t: 0, max: t, color });
   }
-  meteor(x: number, y: number, t: number): void {
-    this.meteors.push({ x, y, t: 0, max: t });
-    this.tele.push({ type: 'circle', x, y, r: 60, t: 0, max: t, color: '#ff7043' });
+  meteor(x: number, y: number, t: number, friendly = true): void {
+    this.meteors.push({ x, y, t: 0, max: t, friendly });
+    this.telegraphCircle(x, y, 60, t, '#ff7043', friendly);
   }
   arrowFall(x: number, y: number, color: string, t: number): void {
     this.meteors.push({ x, y, t: 0, max: t, small: true, color });
@@ -600,8 +602,8 @@ export class FX {
   telegraphLine(e: Enemy, px: number, py: number, t: number): void {
     this.tele.push({ type: 'line', e, px, py, t: 0, max: t });
   }
-  telegraphCircle(x: number, y: number, r: number, t: number, color?: string): void {
-    this.tele.push({ type: 'circle', x, y, r, t: 0, max: t, color });
+  telegraphCircle(x: number, y: number, r: number, t: number, color?: string, friendly = false): void {
+    this.tele.push({ type: 'circle', x, y, r, t: 0, max: t, color, friendly });
   }
   explosion(x: number, y: number, r: number, color: string, small?: boolean): void {
     const l = small ? 0.25 : 0.5;

@@ -60,7 +60,7 @@ export const SOUL_ARTS: SoulArtDef[] = [
       const t = densest(g, p.x, p.y, 460);
       const x = t ? t.x : p.x + p.face.x * 160, y = t ? t.y : p.y + p.face.y * 160;
       const r = 150 * p.stats.area, dmg = artDmg(p, 90, 13, power);
-      g.fx.telegraphCircle(x, y, r, 0.55, '#fde68a');
+      g.fx.telegraphCircle(x, y, r, 0.55, '#fde68a', true);
       g.meteor(x, y, 0.55, () => {
         g.eachEnemyIn(x, y, r, (e) => { g.damageEnemy(e, dmg + (e.boss ? 0 : e.maxHp * 0.2 * power), { weapon: SRC, kx: e.x - x, ky: e.y - y, knock: 1.2 }); g.applyStatus(e, 'stun', { dur: 1 }); });
         g.fx.explosion(x, y, r, '#fde68a'); g.fx.ring(x, y, r * 1.3, '#fff7d6'); g.fx.shockwave(x, y, r * 1.6, 18); g.fx.flash('#fde68a', 0.25); g.fx.shake(8); g.sfx('explode');

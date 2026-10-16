@@ -10,6 +10,7 @@ import { Emitter } from '../core/events';
 import { segmentCircleHit } from '../core/collision';
 import { rand, simRng } from '../core/rng';
 import { SpatialHash } from '../core/spatial-hash';
+import { RiftDirector } from './rifts';
 import { U } from '../core/util';
 import { CHAR_BASE, CHAR_BY_ID } from '../data/characters';
 import { BOONS, BOON_BY_ID, LEGENDARY_BOON_CHANCE } from '../data/boons';
@@ -158,6 +159,7 @@ const SRC_KEYSTONE: DamageSource = { id: 'keystone' };
 const SRC_STAR: DamageSource = { id: 'starweb' };
 
 export class Game {
+  readonly rifts = new RiftDirector(this);
   readonly events = new Emitter<GameEvents>();
   state: GameState = 'idle';
   paused = false;
@@ -326,6 +328,7 @@ export class Game {
     applyTorment(mods, this.torment);
     this.mods = mods; this.heat = heat;
     this.time = 0; this.frame = 0; this.dt = 1 / 60;
+    this.rifts.reset();
     this.enemies = []; this.projs = []; this.eprojs = []; this.zones = []; this.mines = []; this.allies = []; this.pickups = []; this.timers = [];
     this.grid.clear();
     this.kills = 0; this.bossKills = 0; this.elites = 0; this.evolves = 0; this.gold = 0; this.embers = 0; this.mats = { iron: 0, dust: 0, crystal: 0, star: 0, eclipse: 0 };
@@ -362,7 +365,7 @@ export class Game {
       stats: null as unknown as PlayerStats, dyn: {}, f: Object.assign({}, this.meta.flags), res: 0, resMax: 1, weapons: [], passives: [], weaponMastery: this.meta.weaponMastery,
       face: { x: 1, y: 0 }, move: { x: 0, y: 0 }, movedDist: 0, invulnT: 0, hurtFlash: 0, activeCdT: 0, activeCharges: 1, activeMax: 1, critAllT: 0,
       rerolls: 0, skips: 0, banishes: 0, revivals: 0, kills: 0, boons: [] as string[], slowT: 0, slots: { w: 6 + (this.meta.flags.weaponSlot ? 1 : 0), p: 6 + (this.meta.flags.passiveSlot ? 1 : 0) },
-      walkT: 0, dashT: 0, dashDx: 0, dashDy: 0, dashSpeed: 0, dashOnStep: null, dashStepDist: 30, dashAcc: 0, dashCdT: 0, auraColor: null,
+      walkT: 0, attackAt: -10, castAt: -10, dashT: 0, dashDx: 0, dashDy: 0, dashSpeed: 0, dashOnStep: null, dashStepDist: 30, dashAcc: 0, dashCdT: 0, auraColor: null,
       weaponLevels: this.meta.weaponLevels || {}, abilityRank: this.meta.flags.asc_rank ? ASCENDED_ABILITY_RANK : 0,
       dashMax: this.meta.flags.ks_phantom ? 2 : 1, dashCharges: this.meta.flags.ks_phantom ? 2 : 1, tranceUntil: 0, echoUntil: 0, covenantUntil: 0,
     };
@@ -431,6 +434,7 @@ export class Game {
     }
     for (const id of p.boons) { const b = BOON_BY_ID[id]; if (b && b.stats) acc(b.stats); }
     for (const b of this.buffs) acc(b.stats);
+    acc(this.rifts.stats);
     const ct = this.comboTier * (f.b_frenzy ? 2 : 1);
     if (ct) acc({ might: COMBO_MIGHT * ct, growth: COMBO_GROWTH * ct });
     if (this.curseBonus) acc({ curse: this.curseBonus });
@@ -483,6 +487,8 @@ export class Game {
     this.updateHazards(dt);
     if (this.state !== 'play') return;
     this.updateShrines(dt);
+    if (this.state !== 'play') return;
+    this.rifts.update(dt);
     this.updateMetaEffects(dt);
     if (this.frame % 12 === 0) this.recalc();
     if (!this.eclipse && this.time >= 1800) { this.eclipse = true; this.notice('THE ECLIPSE — the horde grows without end', '#c084fc', 5); this.fx.flash('#c084fc', 0.7); this.fx.timeWarp(0.3, 1.2); this.sfx('boss'); this.story('eclipse'); }
@@ -491,6 +497,7 @@ export class Game {
     if (this.levelQueue > 0) { this.state = 'levelup'; this.events.emit('levelUp', this.genOptions()); }
     else if (this.chestQueue.length) { const c = this.chestQueue.shift()!; this.state = 'chest'; this.openChest(c); }
     else if (this.boonQueue > 0) { this.boonQueue--; const opts = this.boonOptions(); if (opts.length) { this.state = 'boon'; this.events.emit('boon', opts); } }
+    else if (this.rifts.offers.length) { this.state = 'relic'; this.events.emit('relic', this.rifts.offers); }
   }
 
   /** Record pre-step positions so the renderer can interpolate between steps. */
@@ -520,7 +527,7 @@ export class Game {
     const length = Math.hypot(mx, my); if (length > 1) { mx /= length; my /= length; }
     const l = Math.min(1, length);
     p.move.x = mx; p.move.y = my;
-    if (l > 0.01) { p.face.x = mx / (l || 1); p.face.y = my / (l || 1); p.walkT += dt * 9; }
+    if (l > 0.01) { p.face.x = mx / (l || 1); p.face.y = my / (l || 1); }
     let spd = st.speed;
     if (p.f.adrenaline && p.hp < st.maxHp * 0.3) spd *= 1.2;
     if (p.slowT > 0) { p.slowT -= dt; spd *= 0.6; }
@@ -535,6 +542,7 @@ export class Game {
     } else {
       p.x += mx * spd * dt; p.y += my * spd * dt;
       p.movedDist += l * spd * dt;
+      p.walkT += l * spd * dt / 90 * TAU;
     }
     p.invulnT -= dt; p.hurtFlash -= dt; p.critAllT -= dt;
     for (const k of ['cdAshen', 'cdUnbroken', 'cdVeil']) if (p[k] > 0) p[k] -= dt;
@@ -563,6 +571,7 @@ export class Game {
     const p = this.player;
     if (this.state !== 'play' || p.hp <= 0 || p.activeCharges <= 0 || p.f.b_silence) return;
     p.activeCharges--;
+    p.castAt = this.time;
     if (p.activeCdT <= 0) p.activeCdT = this.activeCooldown();
     // Ability Rank: the ability is cast with extra Might (damage it computes as it is cast)
     const might = p.stats.might;
@@ -579,6 +588,7 @@ export class Game {
     if (this.state !== 'play' || !a || this.artCdT > 0 || p.hp <= 0) return false;
     this.artCdT = this.artCooldown();
     this.artUses++;
+    p.castAt = this.time;
     a.use(this, p, artPower(this.artLevel));
     this.fx.ring(p.x, p.y, 54, a.color);
     return true;
@@ -595,6 +605,7 @@ export class Game {
     if (p.dashCdT <= 0) p.dashCdT = this.dashCooldown();
     this.dash(dx, dy, DASH.dist, DASH.time);
     this.setInvuln(DASH.invuln);
+    this.rifts.onDash();
     this.fx.burst(p.x, p.y, p.char.colors.accent, 10, { speed: 140, life: 0.3 });
     this.sfx('dash');
     // Starweb, uniques: what a dash sets off
@@ -720,6 +731,7 @@ export class Game {
       if (w.def.continuous) { w.def.update!(this, w, s, dt); continue; }
       w.timer -= dt;
       if (w.timer <= 0) {
+        if (w === p.weapons[0]) p.attackAt = this.time;
         w.def.fire!(this, w, s);
         w.timer += Math.max(0.12, s.cd);
         if (w.timer < 0) w.timer = 0.05;
@@ -862,7 +874,7 @@ export class Game {
     });
   }
   lob(x: number, y: number, tx: number, ty: number, t: number, color: string, cb: () => void): void { this.fx.lob(x, y, tx, ty, t, color); this.after(t, cb); }
-  meteor(x: number, y: number, delay: number, cb: () => void): void { this.fx.meteor(x, y, delay); this.after(delay, () => { this.fx.shake(2.5); cb(); }); }
+  meteor(x: number, y: number, delay: number, cb: () => void, hostile = false): void { this.fx.meteor(x, y, delay, !hostile); this.after(delay, () => { this.fx.shake(2.5); cb(); }); }
   rain(x: number, y: number, r: number, count: number, dur: number, dmg: number, w: DamageSource | null | undefined, color: string): void {
     for (let i = 0; i < count; i++) {
       const a = rand() * TAU, d = Math.sqrt(rand()) * r;
@@ -1034,6 +1046,7 @@ export class Game {
     const p = this.player;
     this.kills++; p.kills++;
     this.lastKillAt = this.time;
+    this.rifts.onKill();
     this.enemyKills[e.type] = (this.enemyKills[e.type] || 0) + 1;
     if (info.weapon) { const key = dmgKey(info.weapon); this.killsBySource[key] = (this.killsBySource[key] || 0) + 1; }
     this.fx.death(e);
@@ -1248,7 +1261,7 @@ export class Game {
       if (e.boss || e.rush || e.dead || e.escapeT !== undefined) continue;
       const d2 = U.dist2(e.x, e.y, p.x, p.y);
       if (e.immobile) { if (d2 > dropD2) e.dead = true; continue; }
-      if (d2 > maxD2) { const [x, y] = this.spawnPos(); e.x = e.px = x; e.y = e.py = y; }
+      if (d2 > maxD2 && !e.riftTarget) { const [x, y] = this.spawnPos(); e.x = e.px = x; e.y = e.py = y; }
     }
   }
   /** Timed map events: Blood Moon and meteor shower clocks, Ember Casks, the Gilded Hoarder, Hex Totems. */
@@ -1319,7 +1332,7 @@ export class Game {
       const q = this.player;
       if (U.dist(q.x, q.y, x, y) < R) this.hitPlayer(this.diff.dmg * 16, { def: { name: 'a falling star' } });
       this.envBlast(x, y, R, dmg, { id: 'meteor' }, METEOR_SHOWER.bossCap, 0, true);
-    });
+    }, true);
   }
   /** The Gilded Hoarder appears just off-screen (at most two at a time). */
   spawnHoarder(): Enemy | null {
@@ -2160,6 +2173,7 @@ export class Game {
       weapons: p.weapons.map((w) => ({ id: w.id, level: w.level, evolved: w.evolved, apex: !!w.apex, dmg: w.dmgDealt })), passives: p.passives.map((x) => ({ id: x.id, level: x.level })), eclipse: this.eclipse,
       killedBy: this.lastHitBy, bestCombo: this.bestCombo, reactions: this.reactions, boons: (p.boons as string[]).slice(), shrines: this.shrinesUsed,
       torment: this.torment, apotheoses: this.apotheoses, abilityRank: p.abilityRank || 0, art: this.art ? this.art.id : null, artUses: this.artUses,
+      rifts: this.rifts.completed, relics: this.rifts.relics.slice(),
     };
   }
   quit(): void { this.state = 'over'; }

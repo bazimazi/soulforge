@@ -86,6 +86,34 @@ The same local benchmark after this follow-up reported:
 
 Both runs ended with 341 enemies and three projectiles and reported no errors. Canvas2D drawing improved from the earlier 35.364 ms measurement to 22.839 ms in this fixture, but it still exceeds a 60fps drawing budget. These remain local CPU submission measurements, not a guarantee for every device or arsenal.
 
+## Follow-up: spell presence at full intensity — 15 October 2026
+
+Spell silhouettes now have a separate, bounded visibility curve from decorative glow. The earlier combined crowd, size, and family fades could make large projectiles, beams, slashes, novas, and pools almost disappear even at 100% effects. Friendly projectile bodies and pool boundaries now draw after ambient lighting; the slider still dims them at lower settings. Large bodies retain their silhouette, and overlapping area boundaries soften without vanishing.
+
+Colored beam/slash cores use normal compositing with narrow highlights, while broad glows, particles, lighting, bloom, and flashes keep their decorative limits. Friendly orbs have independently controlled halos and colored centers. Repeated rings, explosions, and novas soften as they stack. Pool fills remain subtle, and their overlap budget counts visible pools so distant pools do not suppress a local boundary. Combat damage, hitboxes, timing, and enemy warning/projectile opacity are unchanged.
+
+Browser verification compares sparse and crowded scenes at 10%, 50%, and 100%, including large projectiles, beams, slashes, novas, pool boundaries, stacked pools, bloom/glow limits, and hostile warnings. The same six crowded arsenals cover all 35 Apotheosis weapons in both renderers. The existing deterministic tests continue to verify identical combat at minimum and maximum effects.
+
+`npm run check` passes all 349 tests, TypeScript, and ESLint. The initial browser pass passed 14 checks, including desktop/phone/landscape settings and complete runs. After visual refinements, all six targeted arsenal/visibility checks passed again; the final live-run and visibility pass added four successful checks. Before/after screenshots are in `test-results/spell-before/`, `spell-final/`, and `spell-live-final/`. Formatting and patch whitespace checks pass.
+
+The same local 600-frame benchmark with 1,500 injected enemies ended with 341 enemies and three projectiles on each backend. WebGL2 averaged 1.183 ms simulation / 1.806 ms drawing (worst drawing 22.8 ms); Canvas2D averaged 2.755 ms / 22.126 ms (worst drawing 198.8 ms). Both reported no errors. These are CPU submission timings with GPU synchronization disabled; fallback-renderer frame spikes remain a profiling concern.
+
+## Corrective pass: late-game effects and level-up input — 15 October 2026
+
+The preceding visibility pass left inconsistent paths and missed a real WebGL resource bug. Atlas overflow deleted textures while the current frame still referenced them. Pages now remain valid throughout frame submission, cold excess pages retire between frames, and oversized spell textures are resampled without changing their world geometry or pivots. Halo-free orbs also use much smaller texture bounds.
+
+Player spells now use one intensity curve for their bodies and a separate shared budget for broad decoration. Only effects intersecting the view contribute to that budget; extra family multipliers no longer repeatedly fade the same spell. Dense projectile volleys share opacity locally with a visibility floor. Frost spikes respect their upgraded size, and champion auras, shields, summons, friendly targeting markers, meteors and existing spell ripples respond to the slider. Hostile meteor-shower markers and hostile projectile cores remain readable. Targeting warnings draw above friendly effects.
+
+Cluster mines retain pulsing runes while their trigger-radius hints stay subtle. Overlapping pools of the same type/color expose the outside boundary of their combined footprint, removing the internal ring mesh. Exact circle intersections preserve isolated pool sizes; newborn and expired pools cannot hide an active boundary. The boundary calculation merges coverage incrementally and stops when an interior rim is fully covered. A local browser CPU microbenchmark reduced the 300-pool boundary calculation from about 11.4 ms to 1.42 ms; this excludes draw submission and is not a whole-game frame-rate claim.
+
+Space is intercepted on both keydown and keyup during level-up choices, including repeats and a held press released after another key selects an upgrade. Cards, reroll, skip and banish cannot activate from Space. Mouse, Enter and numeric choices remain available, and a fresh Space press still dashes after play resumes.
+
+Browser coverage now includes a rendered-pixel matrix of **125 cases** (35 weapons at level 4, evolved maximum and Apotheosis/Overdrive, 12 champion abilities, eight Soul Arts), sampled during casts, travel and delayed impacts at 10%, 50% and 100%. Separate sustained level-80 fixtures cover all 35 weapons in six dense arsenals at 20-minute and Eclipse game times across all five biome palettes. These deliberately mixed builds and durable targets exercise presentation; their damage totals are not normal-run balance measurements. Screenshots and roster sheets were visually inspected in Chrome with both rendering backends.
+
+Regression coverage also forces atlas overflow and oversized textures, checks cold-page re-upload, verifies live ripple intensity and friendly/hostile meteor separation, and exercises held-Space input around the level-up modal. Seven geometry tests cover pool union boundaries, including independent point-coverage comparisons. The broader browser review corrected two fixture assumptions: an interruption handler could accidentally click a newly opened relic, and the smoke test could randomly choose Oath of Silence before asserting that abilities still worked.
+
+`npm run check` passes TypeScript, ESLint and **356 unit/simulation tests**. The complete production browser suite passed **54 checks**, with two expected Canvas2D skips for the WebGL-only atlas/context tests. Final shield-layer refinements then passed both renderer checks again. Production builds, formatting and patch-whitespace checks pass. Browser artifacts are in `test-results/vfx-verified-final/` and `test-results/vfx-shield-final/`.
+
 ## Limits and release work
 
 Synthetic combat is useful for catching broken effects and non-finite state. It does not measure human win rates, build diversity, perceived fairness, or the full progression economy. No exhaustive claim is made about every combination of talents, equipment, boons, and weapon levels.

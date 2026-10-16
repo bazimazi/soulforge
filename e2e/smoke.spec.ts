@@ -71,7 +71,8 @@ test('a full run: start, level up, pause, abandon, results', async ({ page, base
   await page.click('#chestOk');
   await expect.poll(() => state(page)).toBe('boon');
   await expect(page.locator('#modal .boon-card')).toHaveCount(3);
-  await page.locator('#modal .boon-card').first().click();
+  // This test exercises the ability button later; the random Oath of Silence deliberately seals it.
+  await page.locator('#modal .boon-card').filter({ hasNotText: 'Oath of Silence' }).first().click();
   await expect.poll(() => state(page)).toBe('play');
   expect(await page.evaluate(() => window.__SF!.game.player.boons.length)).toBe(1);
 

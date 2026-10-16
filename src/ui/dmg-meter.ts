@@ -31,6 +31,7 @@ const SYNTHETIC: Record<string, SourceInfo> = {
   burn: { name: 'Burning', icon: { g: 'flame', c: '#ff7043' }, hint: 'Burn damage over time' },
   bleed: { name: 'Bleeding', icon: { g: 'drop', c: '#ef4444' }, hint: 'Bleed damage over time' },
   reaction: { name: 'Reactions', icon: { g: 'spiral', c: '#a5f3fc' }, hint: 'Elemental reactions' },
+  relic: { name: 'Rift relics', icon: { g: 'rune', c: '#5eead4' }, hint: 'Relics earned from world encounters' },
   boon: { name: 'Boons', icon: { g: 'star', c: '#fbbf24' }, hint: 'Boon effects' },
   unique: { name: 'Relic powers', icon: { g: 'ring', c: '#fde68a' }, hint: 'Unique relic effects' },
   thorns: { name: 'Thorns', icon: { g: 'shield', c: '#a3e635' }, hint: 'Damage reflected by thorns' },

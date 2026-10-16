@@ -9,6 +9,7 @@
  * engine itself reads or writes is typed precisely.
  */
 import type { Game } from './game';
+import type { RiftRelic } from '../data/rifts';
 
 /* ------------------------------------------------------------------ */
 /* Stats                                                              */
@@ -296,6 +297,9 @@ export interface Player {
   kills: number;
   slots: { w: number; p: number };
   walkT: number;
+  /** Simulation timestamps for presentation; animations never decide damage or cooldowns. */
+  attackAt: number;
+  castAt: number;
   dashT: number;
   dashDx: number;
   dashDy: number;
@@ -461,6 +465,8 @@ export interface Enemy {
   weakT: number;
   weak: number;
   spawnT: number;
+  /** Marked by an optional rift hunt; retained as a target until that encounter resolves. */
+  riftTarget?: boolean;
   flip: number;
   noSplit?: boolean;
   /** Bombers: seconds left on an armed fuse (they stop and flash, then detonate). */
@@ -516,7 +522,7 @@ export interface Enemy {
 export type SpriteSpec =
   | { kind: 'orb'; color: string; size?: number }
   | { kind: 'void' | 'wave' | 'tornado'; color: string; size: number }
-  | { kind: 'spike'; color?: string }
+  | { kind: 'spike'; color?: string; size?: number }
   | { kind: 'bolt' | 'arrow' | 'dagger' | 'shard' | 'axe' | string; color: string; len?: number; wid?: number; size?: number };
 
 export interface StatusSpec {
@@ -886,13 +892,16 @@ export interface RunSummary {
   /** Equipped Soul Art (null = none) and how often it was cast. */
   art: string | null;
   artUses: number;
+  /** Optional for older run-summary fixtures. Relics last for one run. */
+  rifts?: number;
+  relics?: string[];
 }
 
 /* ------------------------------------------------------------------ */
 /* Simulation ⇄ host boundary                                         */
 /* ------------------------------------------------------------------ */
 
-export type GameState = 'idle' | 'play' | 'paused' | 'levelup' | 'chest' | 'boon' | 'over';
+export type GameState = 'idle' | 'play' | 'paused' | 'levelup' | 'chest' | 'boon' | 'relic' | 'over';
 
 /** Everything the simulation tells the outside world. The sim never touches DOM/UI/audio directly. */
 export type GameEvents = {
@@ -906,6 +915,7 @@ export type GameEvents = {
   discover: (kind: 'weapon' | 'boss' | 'boon' | 'reaction', id: string) => void;
   /** A boss chest grants a choice of run-long boons. */
   boon: (options: BoonDef[]) => void;
+  relic: (options: RiftRelic[]) => void;
   /** A narrative moment the presentation layer may voice (narrator, character, boss lines). */
   story: (beat: StoryBeatId, ref?: string) => void;
 };

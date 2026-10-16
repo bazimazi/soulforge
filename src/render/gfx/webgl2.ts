@@ -601,6 +601,7 @@ export class WebGL2Backend implements Backend {
   /* ---------------------------- frame recording ---------------------------- */
 
   begin(clear: string): void {
+    this.atlas.beginFrame();
     this.n = 0;
     this.cmds.length = 0;
     this.views.length = 0;

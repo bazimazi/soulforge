@@ -9,6 +9,7 @@
  */
 import { U } from '../core/util';
 import { SHRINE_DEFS } from '../data/shrines';
+import { RIFT_DEFS } from '../data/rifts';
 import type { Game } from '../game/game';
 import type { StageDef } from '../game/types';
 import { CHUNK, propLayout, type PropSpot } from '../render/layout';
@@ -27,7 +28,7 @@ const FULL_MAX = 12000;
 const TRAIL_STEP = 90;
 const TRAIL_MAX = 3000;
 
-type PoiKind = 'boss' | 'hoarder' | 'totem' | 'shrine' | 'cask' | 'item';
+type PoiKind = 'boss' | 'hoarder' | 'totem' | 'shrine' | 'rift' | 'cask' | 'item';
 interface Poi {
   x: number;
   y: number;
@@ -71,6 +72,7 @@ const LEGEND: [string, string, 'dot' | 'tower' | 'sprite'][] = [
   ['Elite', '#fb923c', 'dot'],
   ['Boss', POI_COLOR.boss, 'dot'],
   ['Shrine', '#5eead4', 'dot'],
+  ['Rift / objective', '#5eead4', 'dot'],
   ['Hoarder', POI_COLOR.hoarder, 'dot'],
   ['Hex Totem', POI_COLOR.totem, 'dot'],
   ['Ember Cask', POI_COLOR.cask, 'dot'],
@@ -258,6 +260,16 @@ export class MapView {
     }
     for (const s of g.shrines)
       if (!s.used && !s.dead) out.push({ x: s.x, y: s.y, kind: 'shrine', color: SHRINE_DEFS[s.kind].color, arrow: true });
+    const r = g.rifts.current;
+    if (r && (r.phase === 'available' || r.phase === 'active')) {
+      const goals =
+        r.phase === 'active' && r.kind === 'hunt'
+          ? r.targets.filter((e) => !e.dead)
+          : r.phase === 'active' && r.kind === 'relay'
+            ? r.beacons.filter((b) => !b.lit)
+            : [r];
+      for (const goal of goals) out.push({ x: goal.x, y: goal.y, kind: 'rift', color: RIFT_DEFS[r.kind].color, arrow: true });
+    }
   }
 
   private propsAt(g: Game, cx: number, cy: number): PropSpot[] {
@@ -528,6 +540,7 @@ export class MapView {
         x.rect(sx - 2.5 * u, sy - 3 * u, 5 * u, 6 * u);
         break;
       case 'shrine':
+      case 'rift':
         x.moveTo(sx, sy - 5 * u);
         x.lineTo(sx + 4 * u, sy);
         x.lineTo(sx, sy + 5 * u);

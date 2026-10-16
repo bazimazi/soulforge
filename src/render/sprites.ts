@@ -1,6 +1,7 @@
 /* SOULFORGE — procedural sprite factory. Everything is drawn at load time into offscreen canvases. */
 import { U } from '../core/util';
 import type { CharacterDef, EnemyColors, IconSpec, StagePalette } from '../game/types';
+import { actionPose, HERO_ACTION_FRAMES, type HeroAction, type HeroPose } from './hero-animation';
 
 type Ctx = CanvasRenderingContext2D;
 /**
@@ -99,11 +100,11 @@ function light(r: number): HTMLCanvasElement {
   cache.set(key, c);
   return c;
 }
-function orb(color: string, r: number, core = '#ffffff'): HTMLCanvasElement {
-  const key = 'orb|' + color + '|' + r + '|' + core;
+function orb(color: string, r: number, core = '#ffffff', halo = true): HTMLCanvasElement {
+  const key = 'orb|' + color + '|' + r + '|' + core + '|' + halo;
   const hit = cached<HTMLCanvasElement>(key); if (hit) return hit;
-  const R = r * 2.6, [c, x] = mkRes(R * 2, R * 2);
-  x.drawImage(glow(color, R * RES), 0, 0, R * 2, R * 2);
+  const R = halo ? r * 2.6 : r + 2, [c, x] = mkRes(R * 2, R * 2);
+  if (halo) x.drawImage(glow(color, R * RES), 0, 0, R * 2, R * 2);
   const g = x.createRadialGradient(R - r * 0.3, R - r * 0.3, 0, R, R, r);
   g.addColorStop(0, core); g.addColorStop(0.5, color); g.addColorStop(1, U.rgba(color, 0.7));
   x.fillStyle = g; x.beginPath(); x.arc(R, R, r, 0, U.TAU); x.fill();
@@ -183,12 +184,8 @@ const helpers = { circle, poly, rgrad, eyes };
 /** Champion frames: 0 = idle, 1..HERO_FRAMES-1 = a seamless walk cycle. */
 export const HERO_FRAMES = 8;
 /** One champion pose: stride, arm swing, body bob, cloth/hair lag and an optional cast lean. */
-interface HeroPose { lx: number; ll: number; rx: number; rl: number; aL: number; aR: number; bob: number; hem: number; hair: number; ph: number; cast: boolean }
 function heroPose(step: number, cast: boolean): HeroPose {
-  if (cast) return { lx: -3.6, ll: 0, rx: 3.8, rl: 0, aL: -0.6, aR: 1, bob: 0.6, hem: -2.2, hair: -2, ph: 0, cast };
-  if (step <= 0) return { lx: 0, ll: 0, rx: 0, rl: 0, aL: 0, aR: 0, bob: 0, hem: 0, hair: 0, ph: 0, cast };
-  const ph = ((step - 1) % (HERO_FRAMES - 1)) / (HERO_FRAMES - 1) * U.TAU, s = Math.sin(ph), co = Math.cos(ph);
-  return { lx: 4.2 * s, ll: 3.4 * Math.max(0, co), rx: -4.2 * s, rl: 3.4 * Math.max(0, -co), aL: -s, aR: s, bob: 0.55 - 1.1 * co * co, hem: -1.6 * Math.sin(ph - 0.7), hair: -1.8 * Math.sin(ph - 1.1), ph, cast };
+  return actionPose(cast ? 'attack' : step > 0 ? 'run' : 'idle', cast ? 4 : step > 0 ? Math.floor((step - 1) / (HERO_FRAMES - 1) * 12) : 0);
 }
 /** Round-capped polyline (limbs, tentacles, bones). */
 function limb(x: Ctx, pts: readonly Pt[], w: number, color: Paint): void {
@@ -205,23 +202,24 @@ function vgrad(x: Ctx, y0: number, y1: number, col: string, hi = 0.18, lo = -0.3
  * A champion, drawn in a 72-unit box (feet at y≈62). `size` is the canvas size in pixels; `step`
  * picks a pose (0 standing, 1..HERO_FRAMES-1 the walk cycle); `cast` draws the attack/cast pose.
  */
-function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCanvasElement {
-  const key = 'char|' + def.id + '|' + size + '|' + step + '|' + (cast ? 1 : 0);
+function character(def: CharacterArt, size = 72, step = 0, cast = false, action?: HeroAction, back = false, gait = -1): HTMLCanvasElement {
+  const key = 'char|' + def.id + '|' + size + '|' + step + '|' + (cast ? 1 : 0) + '|' + (action ?? 'legacy') + '|' + back + '|' + gait;
   const hit = cached<HTMLCanvasElement>(key); if (hit) return hit;
-  const c = mk(size, size), x = ctx2d(c);
-  const col = def.colors, s = size / 72, P = heroPose(step, cast);
+  const c = mk(action ? size * 104 / 72 : size, action ? size * 88 / 72 : size), x = ctx2d(c);
+  const col = def.colors, s = size / 72, P = action ? actionPose(action, step, gait) : heroPose(step, cast);
   const skin = col.skin || '#e9c9a8', hairC = col.hair || col.secondary, eyeC = col.eye || '#fff', A = col.accent;
   const hd = def.head || 'hood', wp = def.weaponArt || 'sword';
-  x.save(); x.scale(s, s); x.lineJoin = 'round'; x.lineCap = 'round';
+  x.save(); x.scale(s, s); if (action) x.translate(16, 8); x.lineJoin = 'round'; x.lineCap = 'round';
   const cx = 36, by = P.bob, ink = 'rgba(10,6,14,0.55)';
   // aura glow
   x.globalAlpha = cast ? 0.6 : 0.32; x.drawImage(glow(A, 30), cx - 30, 38 - 30); x.globalAlpha = 1;
   // upper body leans into a cast (pivot at the hips)
-  const lean = (fn: () => void) => { x.save(); if (P.cast) { x.translate(cx, 48); x.rotate(0.09); x.translate(-cx, -48); } fn(); x.restore(); };
+  const lean = (fn: () => void) => { x.save(); x.translate(cx, 48); x.rotate(P.lean); x.translate(-cx, -48); fn(); x.restore(); };
   // shoulders, hands (hand positions follow the arm swing)
   const shL: Pt = [cx - 11, 29 + by], shR: Pt = [cx + 11, 29 + by];
-  const hL: Pt = P.cast ? [cx - 17, 40 + by] : [cx - 15.5 + P.aL * 3.6, 43.5 + by - Math.abs(P.aL) * 0.7];
-  const hR: Pt = P.cast ? ({ staff: [cx + 13, 41 + by], ice: [cx + 13, 41 + by], bow: [cx + 15, 34 + by], hammer: [cx + 12, 37 + by], scythe: [cx + 13, 38 + by] } as Record<string, Pt>)[wp] || [cx + 14.5, 32 + by] : [cx + 15.5 + P.aR * 3.6, 43.5 + by - Math.abs(P.aR) * 0.7];
+  const hL: Pt = [cx - 15.5 + P.aL * 3.6, 43.5 + by - P.reach * 5];
+  const castHand = ({ staff: [13, 38], ice: [13, 38], bow: [18, 32], hammer: [12, 30], scythe: [13, 34] } as Record<string, Pt>)[wp] || [20, 32];
+  const hR: Pt = P.cast ? [cx + 15.5 + (castHand[0] - 15.5) * P.reach, 43.5 + (castHand[1] - 43.5) * P.reach + by] : [cx + 15.5 + P.aR * 3.6, 43.5 + by - Math.abs(P.aR) * 0.7];
   /* --- back layer: quiver / backpack, cape, long hair --- */
   lean(() => {
     if (wp === 'bow') { x.save(); x.translate(cx - 9, 30 + by); x.rotate(-0.45); x.fillStyle = '#5a3a1e'; x.beginPath(); x.roundRect(-3, -12, 6, 22, 2); x.fill(); x.strokeStyle = ink; x.lineWidth = 1; x.stroke(); for (let i = -1; i <= 1; i++) poly(x, [[i * 1.8, -12], [i * 1.8 - 1.4, -16], [i * 1.8 + 1.4, -16]], '#e8e2d0'); x.restore(); }
@@ -333,8 +331,16 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
     if (def.longHair && hd !== 'hood') { x.fillStyle = vgrad(x, hy - 6, hy + 10, hairC, 0.08, -0.25); for (const sd of [-1, 1]) { x.beginPath(); x.moveTo(hx + sd * 9.4, hy + 1); x.quadraticCurveTo(hx + sd * 10.5, hy + 6, hx + sd * 8.6 + P.hair * 0.3, hy + 11); x.lineTo(hx + sd * 7.4, hy + 3); x.closePath(); x.fill(); } }
     // eyes
     x.fillStyle = eyeC; x.shadowColor = eyeC; x.shadowBlur = 5;
-    x.fillRect(hx - 4.8, hy - 0.4, 2.8, 1.9); x.fillRect(hx + 2, hy - 0.4, 2.8, 1.9); x.shadowBlur = 0;
+    x.fillRect(hx - 4.8, hy - 0.4, 2.8, P.blink ? 0.5 : 1.9); x.fillRect(hx + 2, hy - 0.4, 2.8, P.blink ? 0.5 : 1.9); x.shadowBlur = 0;
     x.fillStyle = 'rgba(60,20,20,0.35)'; x.fillRect(hx - 1.4, hy + 4.2, 2.8, 0.8);
+  });
+  if (back) lean(() => {
+    // North-facing cape and the back of the head: a real change of silhouette, not a flat mirror.
+    poly(x, [[cx - 10, 27 + by], [cx + 10, 27 + by], [cx + 16 + P.hem, 57], [cx + P.hem, 60], [cx - 16 + P.hem, 57]], vgrad(x, 27, 60, col.primary, 0.12, -0.45), ink, 1.2);
+    for (const offset of [-7, 0, 7]) limb(x, [[cx + offset, 31 + by], [cx + offset * 1.2 + P.hem * 0.4, 45], [cx + offset * 1.4 + P.hem, 56]], 1, U.rgba(A, 0.18));
+    const hc = hd === 'helm' || hd === 'goggles' ? col.secondary : hd === 'hood' ? col.primary : hairC;
+    circle(x, cx, 17.5 + by, 9, rgrad(x, cx, 17.5 + by, 9, [[0, U.shade(hc, 0.2)], [1, U.shade(hc, -0.25)]]), ink, 1);
+    limb(x, [[cx - 5, 12 + by], [cx - 6, 17 + by], [cx - 4, 23 + by]], 1, 'rgba(255,255,255,0.2)');
   });
   /* --- weapon / accessory --- */
   const metal = '#cfd6e0', wood = '#6b4a2a';
@@ -346,7 +352,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
   const sw = P.aR * 0.12;
   x.strokeStyle = ink; x.lineWidth = 1.2;
   if (wp === 'sword') {
-    const a = P.cast ? 0.7 : 0.32 + sw;
+    const a = P.cast ? -0.2 + P.reach * 1.45 : 0.32 + sw;
     held(hR, a, () => {
       x.shadowColor = A; x.shadowBlur = 5;
       poly(x, [[0, -27], [2.6, -23.5], [2.4, -4], [-2.4, -4], [-2.6, -23.5]], vgrad(x, -27, -4, metal, 0.15, -0.2), '#222', 1); x.shadowBlur = 0;
@@ -357,7 +363,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
     });
     const t2 = tipAt(hR, a, 27); flare(t2[0], t2[1]);
   } else if (wp === 'staff' || wp === 'ice') {
-    const a = P.cast ? 0.3 : 0.04 + sw * 0.5, L = 30;
+    const a = P.cast ? -0.1 + P.reach * 0.5 : 0.04 + sw * 0.5, L = 30;
     held(hR, a, () => {
       x.fillStyle = vgrad(x, -L, 14, wp === 'ice' ? '#5b4a8a' : wood, 0.15, -0.2); x.beginPath(); x.roundRect(-1.5, -L + 2, 3, L + 12, 1.4); x.fill(); x.stroke();
       x.fillStyle = U.rgba(A, 0.8); x.fillRect(-1.8, -L + 6, 3.6, 1.4); x.fillRect(-1.8, -2, 3.6, 1.2);
@@ -376,7 +382,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
   } else if (wp === 'bow') {
     const bx = hR[0], byy = hR[1] - (P.cast ? 0 : 2);
     x.save(); x.translate(bx, byy); if (P.cast) x.rotate(-0.12);
-    const pull = P.cast ? -9 : -2.5;
+    const pull = P.cast ? -2.5 - P.reach * 6.5 : -2.5;
     x.strokeStyle = '#ddd'; x.lineWidth = 0.8; x.beginPath(); x.moveTo(-5, -15); x.lineTo(pull - 5 + 5, 0); x.lineTo(-5, 15); x.stroke();
     x.strokeStyle = '#3a220e'; x.lineWidth = 3.2; x.beginPath(); x.moveTo(-5, -15); x.quadraticCurveTo(5, -9, 0.5, 0); x.quadraticCurveTo(5, 9, -5, 15); x.stroke();
     x.strokeStyle = '#a0703a'; x.lineWidth = 1.8; x.stroke();
@@ -389,7 +395,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
       x.shadowColor = A; x.shadowBlur = 4; poly(x, [[0, -14], [2.4, -9], [1.8, -1], [-1.8, -1], [-2.4, -9]], vgrad(x, -14, 0, metal, 0.2, -0.15), '#222', 0.9); x.shadowBlur = 0;
       spec(-1, -10, -1, -2); x.fillStyle = A; x.fillRect(-3.5, -1.2, 7, 2); x.fillStyle = '#2a1a2a'; x.fillRect(-1.1, 0.8, 2.2, 4.5);
     });
-    dag(hL, P.cast ? -2.2 : Math.PI + 0.45 + P.aL * 0.1); dag(hR, P.cast ? 1.45 : Math.PI - 0.45 + sw);
+    dag(hL, P.cast ? Math.PI + 0.45 - P.reach * 2.1 : Math.PI + 0.45 + P.aL * 0.1); dag(hR, P.cast ? Math.PI - 0.45 - P.reach * 1.3 : Math.PI - 0.45 + sw);
     const t2 = tipAt(hR, 1.45, 14); flare(t2[0], t2[1], 7);
   } else if (wp === 'halo') {
     const hy2 = 6 + by + (P.cast ? -1.5 : 0) + Math.sin(P.ph * 2) * 0.4;
@@ -400,7 +406,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
     x.save(); x.translate(cx - 13, 47 + by); x.rotate(-0.25); x.fillStyle = U.shade(col.secondary, -0.15); x.fillRect(-3.5, -4.5, 7, 9); x.fillStyle = '#f4ecd8'; x.fillRect(-2.5, -4, 5.5, 8); x.fillStyle = col.secondary; x.fillRect(-3.5, -4.5, 1.6, 9); x.restore();
     flare(hR[0] + 2, hR[1] - 2, 7);
   } else if (wp === 'hammer') {
-    const a = P.cast ? 0.35 : -0.18 + sw * 0.6;
+    const a = P.cast ? -0.65 + P.reach * 1.7 : -0.18 + sw * 0.6;
     held(hR, a, () => {
       x.fillStyle = vgrad(x, -26, 10, wood, 0.15, -0.2); x.beginPath(); x.roundRect(-1.7, -24, 3.4, 33, 1.5); x.fill(); x.stroke();
       x.fillStyle = '#3a2410'; x.fillRect(-2, 2, 4, 1.2); x.fillRect(-2, 5, 4, 1.2);
@@ -410,7 +416,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
     });
     const t2 = tipAt(hR, a, 26); flare(t2[0], t2[1], 7);
   } else if (wp === 'scythe') {
-    const a = P.cast ? 0.45 : 0.1 + sw * 0.5, L = 34;
+    const a = P.cast ? -0.3 + P.reach * 1.3 : 0.1 + sw * 0.5, L = 34;
     held(hR, a, () => {
       x.fillStyle = vgrad(x, -L, 14, '#3a2a3a', 0.15, -0.15); x.beginPath(); x.roundRect(-1.4, -L, 2.8, L + 13, 1.3); x.fill(); x.stroke();
       x.fillStyle = col.secondary; x.fillRect(-1.8, -L + 1, 3.6, 2.2);
@@ -425,7 +431,7 @@ function character(def: CharacterArt, size = 72, step = 0, cast = false): HTMLCa
     o(hL, -1, P.ph * 2); o(P.cast ? [hR[0] + 2, hR[1] - 2] : hR, 1, P.ph * 2 + Math.PI);
     flare(hR[0] + 5, hR[1] - 7, 7);
   } else if (wp === 'wrench') {
-    const a = P.cast ? 0.8 : 0.42 + sw;
+    const a = P.cast ? 0.1 + P.reach * 0.9 : 0.42 + sw;
     held(hR, a, () => {
       x.fillStyle = vgrad(x, -16, 4, '#9aa2ad', 0.25, -0.2); x.beginPath(); x.roundRect(-1.6, -14, 3.2, 18, 1.2); x.fill(); x.stroke();
       x.beginPath(); x.arc(0, -17.5, 3.4, -Math.PI / 2 + 0.75, Math.PI * 1.5 - 0.75); x.strokeStyle = ink; x.lineWidth = 4.2; x.lineCap = 'butt'; x.stroke(); x.strokeStyle = '#a8b0bb'; x.lineWidth = 2.6; x.stroke(); x.lineCap = 'round';
@@ -461,6 +467,15 @@ function heroCast(def: CharacterArt): Sprite {
   const sp = withOrigin(character(def, 72 * RES, 0, true), 36, 62, RES);
   cache.set(key, sp);
   return sp;
+}
+/** Cached action frames shared by both renderers and the live champion showcase. */
+function heroAnimated(def: CharacterArt, action: HeroAction, frame: number, back = false, gait = -1, density = RES): Sprite {
+  const f = Math.max(0, Math.floor(frame)) % HERO_ACTION_FRAMES[action];
+  const key = 'hero-action|' + def.id + '|' + action + '|' + f + '|' + back + '|' + gait + '|' + density;
+  const hit = cached<Sprite>(key); if (hit) return hit;
+  // Expanded canvas contains fully extended weapons and cloth; the feet keep the same world pivot.
+  const sp = withOrigin(character(def, 72 * density, f, false, action, back, gait), 52, 70, density);
+  cache.set(key, sp); return sp;
 }
 
 /* ---------- enemy sprites ---------- */
@@ -2102,7 +2117,7 @@ function portraitURL(def: CharacterArt, size = 144): string {
 
 const S = {
   cache, mk, helpers,
-  glow, light, orb, bolt, character, hero, heroCast, enemy, burrowMound, flash, tint,
+  glow, light, orb, bolt, character, hero, heroCast, heroAnimated, enemy, burrowMound, flash, tint,
   gem, coin, coinFrame, pickup, chestOpen, prop, propLight, shrine, groundTile, groundDetail, icon, iconURL, portraitURL,
   ENEMY_FRAMES, HERO_FRAMES, PROP_LIGHTS, GROUND_DETAILS,
 };
