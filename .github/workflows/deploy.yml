@@ -1,6 +1,5 @@
-name: Deploy to GitHub Pages
+name: Build and deploy
 
-# Publishes the production build. Enable it under Settings → Pages → Source: "GitHub Actions".
 on:
   push:
     branches: [main]
@@ -8,29 +7,38 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Served at https://<GAME>.bazimazi.games
+  GAME: soulforge
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-      - id: deployment
-        uses: actions/deploy-pages@v4
+
+      - name: Deploy to https://soulforge.bazimazi.games
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          release="$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          ssh "deploy@$HOST" mkdir -p "/var/www/games/$GAME/releases"
+          rsync -az --chmod=D755,F644 dist/ "deploy@$HOST:/var/www/games/$GAME/releases/$release/"
+          ssh "deploy@$HOST" bazimazi-game-activate "$GAME" "$release"
